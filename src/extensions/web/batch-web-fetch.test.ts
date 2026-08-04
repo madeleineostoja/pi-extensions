@@ -346,10 +346,10 @@ describe("batch_web_fetch", () => {
           requests: [
             {
               url: "https://example.com/good",
-              format: "raw",
+              raw: true,
               maxChars: 4,
             },
-            { url: "https://example.com/bad", format: "raw" },
+            { url: "https://example.com/bad", raw: true },
           ],
         },
         undefined,

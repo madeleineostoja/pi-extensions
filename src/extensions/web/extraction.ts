@@ -10,7 +10,6 @@ export type ExtractedPage = {
   title?: string;
   site?: string;
   published?: string;
-  alternates: string[];
 };
 
 type ExtractionDependencies = {
@@ -29,13 +28,12 @@ export async function extractHtml(
   assertActive(dependencies.deadline, dependencies.parentSignal);
   const { document } = parseHTML(html);
   assertActive(dependencies.deadline, dependencies.parentSignal);
-  const alternates = alternateLinks(document, url, input.format);
   let nestedFailure: unknown;
   assertActive(dependencies.deadline, dependencies.parentSignal);
   let extracted: DefuddleResponse;
   try {
     extracted = await (dependencies.defuddle ?? Defuddle)(document, url, {
-      markdown: input.format === "markdown",
+      markdown: true,
       separateMarkdown: false,
       removeImages: input.removeImages,
       includeReplies: input.includeReplies,
@@ -61,17 +59,16 @@ export async function extractHtml(
   if (nestedFailure) {
     throw nestedFailure;
   }
-  const content = selectExtractedContent(extracted, input.format);
+  const content = extracted.content;
   if (useful(content)) {
     return {
       content,
       title: optional(extracted.title),
       site: optional(extracted.site),
       published: optional(extracted.published),
-      alternates,
     };
   }
-  const fallback = fallbackContent(html, input.format, dependencies);
+  const fallback = fallbackContent(html, dependencies);
   if (!useful(fallback)) {
     throw new WebError(
       "extract",
@@ -81,84 +78,23 @@ export async function extractHtml(
   return {
     content: fallback,
     title: optional(document.title),
-    alternates,
   };
 }
 
-export function renderNonHtml(
-  text: string,
-  format: NormalizedWebFetchInput["format"],
-  contentType: string,
-): string {
-  if (format === "text" || format === "markdown") {
-    return text;
-  }
-  if (format === "html") {
-    return `<pre>${escapeHtml(text)}</pre>`;
-  }
-  if (!isJson(contentType)) {
-    throw new WebError(
-      "content",
-      "Web Fetch format json requires a JSON response.",
-    );
-  }
+export function renderJson(text: string): string | undefined {
   try {
     return JSON.stringify(JSON.parse(text), undefined, 2);
   } catch {
-    throw new WebError("content", "Web Fetch received malformed JSON.");
+    return undefined;
   }
-}
-
-export function renderJson(
-  text: string,
-  format: NormalizedWebFetchInput["format"],
-): string {
-  let formatted: string;
-  try {
-    formatted = JSON.stringify(JSON.parse(text), undefined, 2);
-  } catch {
-    throw new WebError("content", "Web Fetch received malformed JSON.");
-  }
-  if (format === "html") {
-    return `<pre>${escapeHtml(formatted)}</pre>`;
-  }
-  return format === "markdown" ? `\`\`\`json\n${formatted}\n\`\`\`` : formatted;
 }
 
 export function isHtml(contentType: string): boolean {
   return /(?:^|\/)html(?:;|$)|application\/xhtml\+xml/iu.test(contentType);
 }
 
-export function isJson(contentType: string): boolean {
-  return /(?:^|\/)json(?:;|$)|\+json(?:;|$)/iu.test(contentType);
-}
-
-export function isReadableText(contentType: string): boolean {
-  return /^(?:text\/(?:plain|markdown|x-markdown))(?:;|$)/iu.test(contentType);
-}
-
-function selectExtractedContent(
-  result: DefuddleResponse,
-  format: NormalizedWebFetchInput["format"],
-): string {
-  if (format === "markdown") {
-    return result.content;
-  }
-  if (format === "text") {
-    return stripHtml(result.content);
-  }
-  if (format === "html") {
-    return result.content;
-  }
-  throw new WebError(
-    "content",
-    "Web Fetch format json requires a JSON response.",
-  );
-}
-
 function fallbackContent(
   html: string,
-  format: NormalizedWebFetchInput["format"],
   dependencies: ExtractionDependencies,
 ): string {
   assertActive(dependencies.deadline, dependencies.parentSignal);
@@ -170,45 +106,17 @@ function fallbackContent(
   }
   const text = (document.body.textContent ?? "").replace(/\s+/gu, " ").trim();
   assertActive(dependencies.deadline, dependencies.parentSignal);
-  if (format === "html") {
-    return `<p>${escapeHtml(text)}</p>`;
-  }
   return text;
-}
-
-function alternateLinks(
-  document: Document,
-  url: string,
-  format: NormalizedWebFetchInput["format"],
-): string[] {
-  return [...document.querySelectorAll("link[rel][href]")]
-    .filter((link) =>
-      link.getAttribute("rel")?.split(/\s+/u).includes("alternate"),
-    )
-    .filter((link) =>
-      appropriateAlternate(link.getAttribute("type") ?? "", format),
-    )
-    .flatMap((link) => {
-      try {
-        return [new URL(link.getAttribute("href")!, url).href];
-      } catch {
-        return [];
-      }
-    });
 }
 
 export function inspectHtml(
   html: string,
   url: string,
-  format: NormalizedWebFetchInput["format"],
   dependencies: Pick<ExtractionDependencies, "deadline" | "parentSignal">,
-): { meta?: string; alternates: string[] } {
+): { meta?: string } {
   assertActive(dependencies.deadline, dependencies.parentSignal);
   const { document } = parseHTML(html);
-  const result = {
-    meta: metaRefresh(document, url),
-    alternates: alternateLinks(document, url, format),
-  };
+  const result = { meta: metaRefresh(document, url) };
   assertActive(dependencies.deadline, dependencies.parentSignal);
   return result;
 }
@@ -236,20 +144,6 @@ export function metaRefresh(
   }
 }
 
-function appropriateAlternate(type: string, format: string): boolean {
-  const normalized = type.toLowerCase().split(";", 1)[0];
-  if (format === "json") {
-    return isJson(normalized);
-  }
-  if (format === "html") {
-    return normalized === "text/html" || normalized === "application/xhtml+xml";
-  }
-  if (format === "markdown") {
-    return normalized === "text/markdown" || normalized === "text/plain";
-  }
-  return normalized === "text/plain" || normalized === "text/markdown";
-}
-
 function useful(value: string): boolean {
   const text = value
     .replace(/<[^>]*>/gu, "")
@@ -261,21 +155,6 @@ function useful(value: string): boolean {
 function loadingPlaceholder(value: string): boolean {
   return /^(?:loading(?:[ .…!]+| (?:app(?:lication)?|page|content))?|(?:please )?wait(?:[ .…!]+)?|(?:initiali[sz]ing|booting|starting)(?: (?:app(?:lication)?|page))?[ .…!]*|redirecting[ .…!]*|(?:enable|requires?) javascript[ .…!]*)$/iu.test(
     value,
-  );
-}
-
-function stripHtml(value: string): string {
-  const { document } = parseHTML(`<html><body>${value}</body></html>`);
-  return (document.body.textContent ?? "").replace(/\s+/gu, " ").trim();
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/gu,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        character
-      ]!,
   );
 }
 

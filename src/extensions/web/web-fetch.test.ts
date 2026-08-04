@@ -18,7 +18,22 @@ function page(url: string, contentType: string, body: string): Response {
 }
 
 describe("web_fetch", () => {
-  it("renders validated JSON without extraction and keeps body out of details", async () => {
+  it("accepts only automatic output with an optional raw override", () => {
+    expect(normalizeInput({ url: "https://example.com" })).toMatchObject({
+      raw: false,
+    });
+    expect(
+      normalizeInput({ url: "https://example.com", raw: true }),
+    ).toMatchObject({ raw: true });
+    expect(() =>
+      normalizeInput({
+        url: "https://example.com",
+        format: "json",
+      } as never),
+    ).toThrow("invalid schema");
+  });
+
+  it("automatically renders JSON without extraction and keeps body out of details", async () => {
     const transport: WebTransport = {
       profile: { browser: "chrome_147", os: "windows" },
       fetch: async () =>
@@ -26,15 +41,14 @@ describe("web_fetch", () => {
     };
 
     const result = await executeWebFetch(
-      { url: "https://example.com/data", format: "markdown" },
+      { url: "https://example.com/data" },
       undefined,
       undefined,
       { transport },
     );
 
-    expect(result.content[0]?.text).toContain(
-      '```json\n{\n  "answer": 42\n}\n```',
-    );
+    expect(result.content[0]?.text).toContain('{\n  "answer": 42\n}');
+    expect(result.details).toMatchObject({ output: "json" });
     expect(result.content[0]?.text).toMatch(
       /^Requested URL: https:\/\/example\.com\/data/,
     );
@@ -81,7 +95,6 @@ describe("web_fetch", () => {
           content: "readable content",
           title: "Example title",
           site: "Example",
-          alternates: [],
         }),
       },
     );
@@ -98,73 +111,69 @@ describe("web_fetch", () => {
     expect(JSON.stringify(result.details)).not.toContain("readable content");
   });
 
-  it("follows one qualified JSON alternate without invoking extraction", async () => {
-    const fetch = vi
-      .fn<WebTransport["fetch"]>()
-      .mockResolvedValueOnce(
-        page(
-          "https://example.com",
-          "text/html",
-          '<link rel="alternate" type="application/json" href="/data.json">',
-        ),
-      )
-      .mockResolvedValueOnce(
-        page(
-          "https://example.com/data.json",
-          "application/json",
-          '{"ok":true}',
-        ),
-      );
+  it("detects valid JSON despite an incorrect content type", async () => {
     const transport: WebTransport = {
       profile: { browser: "chrome_147", os: "windows" },
-      fetch,
+      fetch: async () =>
+        page("https://example.com/data", "text/plain", '{"ok":true}'),
     };
 
     const result = await executeWebFetch(
-      { url: "https://example.com", format: "json" },
+      { url: "https://example.com/data" },
       undefined,
       undefined,
       { transport },
     );
 
-    expect(fetch).toHaveBeenNthCalledWith(
-      2,
-      "https://example.com/data.json",
-      undefined,
-      undefined,
-      expect.anything(),
-    );
-    expect(result.content[0]?.text).toContain('"ok": true');
-    expect(result.details).toMatchObject({ alternateAttempts: 1 });
+    expect(result.content[0]?.text).toContain('{\n  "ok": true\n}');
+    expect(result.details).toMatchObject({
+      contentType: "text/plain",
+      output: "json",
+    });
   });
 
-  it.each([
-    ["markdown", "plain response"],
-    ["text", "plain response"],
-    ["html", "<pre>plain response</pre>"],
-    ["json", '{\n  "ok": true\n}'],
-  ] as const)(
-    "renders bounded non-HTML %s output",
-    async (format, expected) => {
-      const transport: WebTransport = {
-        profile: { browser: "chrome_147", os: "windows" },
-        fetch: async () =>
-          page(
-            "https://example.com/data",
-            format === "json" ? "application/json" : "text/plain",
-            format === "json" ? '{"ok":true}' : "plain response",
-          ),
-      };
-      const result = await executeWebFetch(
-        { url: "https://example.com/data", format },
-        undefined,
-        undefined,
-        { transport },
-      );
+  it("detects HTML despite an incorrect content type", async () => {
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () =>
+        page(
+          "https://example.com/post",
+          "text/plain",
+          "<article><h1>Heading</h1><p>Readable page text.</p></article>",
+        ),
+    };
 
-      expect(result.content[0]?.text).toContain(expected);
-    },
-  );
+    const result = await executeWebFetch(
+      { url: "https://example.com/post" },
+      undefined,
+      undefined,
+      { transport },
+    );
+
+    expect(result.content[0]?.text).toContain("Readable page text.");
+    expect(result.details).toMatchObject({
+      contentType: "text/plain",
+      output: "markdown",
+    });
+  });
+
+  it("returns non-JSON textual responses as plain text", async () => {
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () =>
+        page("https://example.com/data", "text/plain", "plain response"),
+    };
+
+    const result = await executeWebFetch(
+      { url: "https://example.com/data" },
+      undefined,
+      undefined,
+      { transport },
+    );
+
+    expect(result.content[0]?.text).toContain("plain response");
+    expect(result.details).toMatchObject({ output: "text" });
+  });
 
   it("follows bounded immediate meta refreshes and rejects a sixth refresh", async () => {
     const fetch = vi
@@ -184,7 +193,7 @@ describe("web_fetch", () => {
       fetch,
     };
     const result = await executeWebFetch(
-      { url: "https://example.com/start", format: "text" },
+      { url: "https://example.com/start" },
       undefined,
       undefined,
       { transport },
@@ -212,37 +221,13 @@ describe("web_fetch", () => {
     };
     await expect(
       executeWebFetch(
-        { url: "https://example.com/again", format: "text" },
+        { url: "https://example.com/again" },
         undefined,
         undefined,
         { transport: loopingTransport },
       ),
     ).rejects.toThrow("five immediate meta refreshes");
     expect(loopCalls).toBe(6);
-  });
-
-  it("limits qualified alternate retries", async () => {
-    const fetch = vi.fn<WebTransport["fetch"]>(async (input) =>
-      page(
-        String(input),
-        "text/html",
-        '<link rel="alternate" type="application/json" href="/alternate">',
-      ),
-    );
-    const transport: WebTransport = {
-      profile: { browser: "chrome_147", os: "windows" },
-      fetch,
-    };
-
-    await expect(
-      executeWebFetch(
-        { url: "https://example.com/start", format: "json" },
-        undefined,
-        undefined,
-        { transport },
-      ),
-    ).rejects.toThrow("after alternate fallbacks");
-    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it("writes a raw textual artifact without invoking extraction", async () => {
@@ -258,7 +243,7 @@ describe("web_fetch", () => {
     };
     try {
       const result = await executeWebFetch(
-        { url: "https://example.com/raw", format: "raw", maxChars: 4 },
+        { url: "https://example.com/raw", raw: true, maxChars: 4 },
         undefined,
         undefined,
         { transport, artifacts, extractHtml: extract },
@@ -306,7 +291,7 @@ describe("web_fetch", () => {
     };
     try {
       const csv = await executeWebFetch(
-        { url: "https://example.com/data.csv", format: "raw" },
+        { url: "https://example.com/data.csv", raw: true },
         undefined,
         undefined,
         { transport, artifacts, extractHtml: extract },
@@ -322,7 +307,7 @@ describe("web_fetch", () => {
       );
 
       const binary = await executeWebFetch(
-        { url: "https://example.com/binary", format: "raw" },
+        { url: "https://example.com/binary", raw: true },
         undefined,
         undefined,
         { transport, artifacts, extractHtml: extract },
@@ -331,7 +316,7 @@ describe("web_fetch", () => {
       expect(binary.content[0]?.text).not.toContain("secret binary");
 
       const attachment = await executeWebFetch(
-        { url: "https://example.com/attachment", format: "raw" },
+        { url: "https://example.com/attachment", raw: true },
         undefined,
         undefined,
         { transport, artifacts, extractHtml: extract },
@@ -365,7 +350,7 @@ describe("web_fetch", () => {
     };
     try {
       const result = await executeWebFetch(
-        { url: "https://example.com/raw", format: "raw", maxChars: 9_001 },
+        { url: "https://example.com/raw", raw: true, maxChars: 9_001 },
         undefined,
         undefined,
         { transport, artifacts },
@@ -373,7 +358,7 @@ describe("web_fetch", () => {
       expect(result.content[0]?.text.split("\n\n").at(-1)).toBe(raw);
 
       const limited = await executeWebFetch(
-        { url: "https://example.com/lines", format: "raw", maxChars: 40_000 },
+        { url: "https://example.com/lines", raw: true, maxChars: 40_000 },
         undefined,
         undefined,
         { transport, artifacts },
@@ -412,7 +397,7 @@ describe("web_fetch", () => {
     };
     try {
       const result = await executeWebFetch(
-        { url: "https://example.com/file", format: "text" },
+        { url: "https://example.com/file" },
         undefined,
         undefined,
         { transport, artifacts },
@@ -468,7 +453,6 @@ describe("web_fetch", () => {
         transport,
         extractHtml: async () => ({
           content: "line\n".repeat(20_000),
-          alternates: [],
         }),
       },
     );
@@ -595,7 +579,7 @@ describe("web_fetch", () => {
           transport,
           extractHtml: async () => {
             controller.abort(new DOMException("cancelled", "AbortError"));
-            return { content: "late content", alternates: [] };
+            return { content: "late content" };
           },
         },
       ),

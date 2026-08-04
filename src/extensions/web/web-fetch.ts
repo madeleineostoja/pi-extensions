@@ -10,9 +10,7 @@ import {
   extractHtml,
   inspectHtml,
   isHtml,
-  isJson,
   renderJson,
-  renderNonHtml,
   type ExtractedPage,
 } from "./extraction.js";
 import { normalizeInput, type WebFetchInput } from "./schema.js";
@@ -58,7 +56,6 @@ export async function executeWebFetch(
       deadline,
     );
     let metaRefreshes = 0;
-    let alternateAttempts = 0;
     while (true) {
       assertActive(deadline, signal);
       const contentType = mediaType(response.headers.get("content-type"));
@@ -87,7 +84,7 @@ export async function executeWebFetch(
           semanticTruncated: false,
         });
       }
-      if (request.format === "raw") {
+      if (request.raw) {
         const artifact = await artifacts.write(response, {
           kind: "raw-text",
           maximumBytes: ARTIFACT_LIMITS.rawBytes,
@@ -105,8 +102,22 @@ export async function executeWebFetch(
       }
       const source = await readText(response, signal, deadline);
       assertActive(deadline, signal);
-      if (isHtml(contentType)) {
-        const inspection = inspectHtml(source, response.url, request.format, {
+      const json = renderJson(source);
+      if (json !== undefined) {
+        const content = truncateCharacters(json, request.maxChars);
+        return result({
+          requestedUrl: request.url,
+          response,
+          contentType,
+          body: content.value,
+          output: "json",
+          profile: transport.profile,
+          semanticTruncated: content.truncated,
+          metaRefreshes,
+        });
+      }
+      if (isHtml(contentType) || looksLikeHtml(source)) {
+        const inspection = inspectHtml(source, response.url, {
           deadline,
           parentSignal: signal,
         });
@@ -132,102 +143,44 @@ export async function executeWebFetch(
           );
           continue;
         }
-        if (request.format === "json") {
-          const alternate = inspection.alternates[0];
-          if (!alternate) {
-            throw new WebError(
-              "content",
-              "Web Fetch format json requires a JSON response.",
-            );
-          }
-          if (alternateAttempts >= LIMITS.alternates) {
-            throw new WebError(
-              "content",
-              "Web Fetch found no JSON response after alternate fallbacks.",
-            );
-          }
-          alternateAttempts++;
-          onUpdate?.({
-            content: [{ type: "text", text: "Trying JSON alternate…" }],
-            details: { phase: "alternate" },
-          });
-          response = await fetchResponse(
-            transport,
-            alternate,
-            signal,
-            deadline,
-          );
-          continue;
-        }
         onUpdate?.({
           content: [{ type: "text", text: "Extracting readable content…" }],
           details: { phase: "extracting" },
         });
-        let page: ExtractedPage;
-        try {
-          page = await extract(source, response.url, request, {
+        const page: ExtractedPage = await extract(
+          source,
+          response.url,
+          request,
+          {
             transport,
             parentSignal: signal,
             deadline,
-          });
-          assertActive(deadline, signal);
-        } catch (error) {
-          assertActive(deadline, signal);
-          const alternate = inspection.alternates[0];
-          if (
-            !(error instanceof WebError) ||
-            error.kind !== "extract" ||
-            !alternate
-          ) {
-            throw error;
-          }
-          if (alternateAttempts >= LIMITS.alternates) {
-            throw new WebError(
-              "extract",
-              "Web Fetch found no readable content after alternate fallbacks.",
-            );
-          }
-          alternateAttempts++;
-          onUpdate?.({
-            content: [{ type: "text", text: "Trying readable alternate…" }],
-            details: { phase: "alternate" },
-          });
-          response = await fetchResponse(
-            transport,
-            alternate,
-            signal,
-            deadline,
-          );
-          continue;
-        }
+          },
+        );
+        assertActive(deadline, signal);
         const content = truncateCharacters(page.content, request.maxChars);
         return result({
           requestedUrl: request.url,
           response,
           contentType,
           body: content.value,
-          format: request.format,
+          output: "markdown",
           profile: transport.profile,
           page,
           semanticTruncated: content.truncated,
           metaRefreshes,
-          alternateAttempts,
         });
       }
-      const rendered = isJson(contentType)
-        ? renderJson(source, request.format)
-        : renderNonHtml(source, request.format, contentType);
-      const content = truncateCharacters(rendered, request.maxChars);
+      const content = truncateCharacters(source, request.maxChars);
       return result({
         requestedUrl: request.url,
         response,
         contentType,
         body: content.value,
-        format: request.format,
+        output: "text",
         profile: transport.profile,
         semanticTruncated: content.truncated,
         metaRefreshes,
-        alternateAttempts,
       });
     }
   } finally {
@@ -240,12 +193,11 @@ function result(options: {
   response: Response;
   contentType: string;
   body: string;
-  format: string;
+  output: "markdown" | "json" | "text" | "raw" | "binary";
   profile: WebTransport["profile"];
   page?: ExtractedPage;
   semanticTruncated: boolean;
   metaRefreshes: number;
-  alternateAttempts: number;
   artifact?: Artifact;
 }): WebFetchResult {
   const requestedUrl = metadataText(options.requestedUrl);
@@ -263,7 +215,7 @@ function result(options: {
     finalUrl,
     status: options.response.status,
     contentType,
-    format: options.format,
+    output: options.output,
     profile: options.profile.browser,
     os: options.profile.os,
     ...(title ? { title } : {}),
@@ -271,9 +223,6 @@ function result(options: {
     ...(published ? { published } : {}),
     ...(options.semanticTruncated ? { semanticTruncated: true } : {}),
     ...(options.metaRefreshes ? { metaRefreshes: options.metaRefreshes } : {}),
-    ...(options.alternateAttempts
-      ? { alternateAttempts: options.alternateAttempts }
-      : {}),
     ...(options.artifact
       ? {
           artifact: {
@@ -293,6 +242,7 @@ function result(options: {
       ? [`Final URL: ${finalUrl}`]
       : []),
     `HTTP: ${options.response.status} · ${contentType}`,
+    `Output: ${options.output}`,
     ...(title ? [`Title: ${title}`] : []),
     ...(site ? [`Site: ${site}`] : []),
     ...(published ? [`Published: ${published}`] : []),
@@ -309,7 +259,7 @@ function result(options: {
       : []),
   ];
   const prefix = `${header.join("\n")}\n\n`;
-  const body = options.format === "raw" ? options.body : softWrap(options.body);
+  const body = options.output === "raw" ? options.body : softWrap(options.body);
   const initial = `${prefix}${body}`;
   const trial = truncateHead(initial, {
     maxBytes: LIMITS.resultBytes,
@@ -347,11 +297,10 @@ function artifactResult(options: {
     response: options.response,
     contentType: options.artifact.contentType,
     body: options.artifact.preview ?? "",
-    format: options.artifact.kind === "raw-text" ? "raw" : "binary",
+    output: options.artifact.kind === "raw-text" ? "raw" : "binary",
     profile: options.profile,
     semanticTruncated: options.semanticTruncated,
     metaRefreshes: 0,
-    alternateAttempts: 0,
     artifact: options.artifact,
   });
 }
@@ -374,6 +323,12 @@ function mediaType(value: string | null): string {
 
 function isAttachment(value: string | null): boolean {
   return /\battachment\b/iu.test(value?.slice(0, LIMITS.metadataChars) ?? "");
+}
+
+function looksLikeHtml(value: string): boolean {
+  return /^\s*(?:<!doctype\s+html|<html|<head|<body|<main|<article|<section|<div|<p|<h[1-6])(?:\s|>)/iu.test(
+    value,
+  );
 }
 
 function isArtifactTextual(contentType: string): boolean {

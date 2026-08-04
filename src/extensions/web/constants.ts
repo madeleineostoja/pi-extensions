@@ -3,7 +3,6 @@ export const LIMITS = {
   requestBodyBytes: 1024 * 1024,
   redirects: 5,
   metaRefreshes: 5,
-  alternates: 3,
   resultBytes: 48 * 1024,
   resultLines: 1_900,
   defaultTimeoutMs: 15_000,

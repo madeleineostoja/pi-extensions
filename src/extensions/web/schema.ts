@@ -10,18 +10,35 @@ export const WebFetchParameters = Type.Object(
       maxLength: LIMITS.urlChars,
       description: "Public credential-free HTTP(S) URL to retrieve.",
     }),
-    format: Type.Optional(
-      StringEnum(["markdown", "html", "text", "json", "raw"] as const),
+    raw: Type.Optional(
+      Type.Boolean({
+        description:
+          "Save the untouched textual response as a temporary artifact instead of returning automatically detected readable content.",
+      }),
     ),
     maxChars: Type.Optional(
-      Type.Integer({ minimum: 1, maximum: LIMITS.maxChars }),
+      Type.Integer({
+        minimum: 1,
+        maximum: LIMITS.maxChars,
+        description: "Maximum model-visible content characters.",
+      }),
     ),
     timeoutMs: Type.Optional(
-      Type.Integer({ minimum: 1_000, maximum: LIMITS.maxTimeoutMs }),
+      Type.Integer({
+        minimum: 1_000,
+        maximum: LIMITS.maxTimeoutMs,
+        description: "Request deadline in milliseconds.",
+      }),
     ),
-    removeImages: Type.Optional(Type.Boolean()),
+    removeImages: Type.Optional(
+      Type.Boolean({
+        description: "Remove images when extracting readable HTML.",
+      }),
+    ),
     includeReplies: Type.Optional(
-      Type.Union([Type.Boolean(), StringEnum(["extractors"] as const)]),
+      Type.Union([Type.Boolean(), StringEnum(["extractors"] as const)], {
+        description: "Include replies when supported by the HTML extractor.",
+      }),
     ),
   },
   { additionalProperties: false },
@@ -59,7 +76,7 @@ export function normalizeInput(input: WebFetchInput): NormalizedWebFetchInput {
   }
   return {
     url,
-    format: input.format ?? "markdown",
+    raw: input.raw ?? false,
     maxChars: input.maxChars ?? LIMITS.defaultMaxChars,
     timeoutMs: input.timeoutMs ?? LIMITS.defaultTimeoutMs,
     removeImages: input.removeImages ?? true,
@@ -90,15 +107,14 @@ function assertInputShape(input: WebFetchInput): void {
     !isRecord(input) ||
     !hasOnly(input, [
       "url",
-      "format",
+      "raw",
       "maxChars",
       "timeoutMs",
       "removeImages",
       "includeReplies",
     ]) ||
     typeof input.url !== "string" ||
-    (input.format !== undefined &&
-      !["markdown", "html", "text", "json", "raw"].includes(input.format)) ||
+    (input.raw !== undefined && typeof input.raw !== "boolean") ||
     (input.maxChars !== undefined &&
       (!Number.isInteger(input.maxChars) ||
         input.maxChars < 1 ||
