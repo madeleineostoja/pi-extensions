@@ -44,6 +44,7 @@ describe("Sandbox policy", () => {
       sessionCwd: root,
       homeDir: home,
       temporaryDir: root,
+      standardTemporaryRoots: [],
       env: {
         npm_config_cache: join(home, "missing-npm"),
         XDG_CACHE_HOME: join(home, "missing-xdg"),
@@ -107,6 +108,7 @@ describe("Sandbox policy", () => {
     const policy = await resolveSandboxPolicy({
       sessionCwd: child,
       temporaryDir: root,
+      standardTemporaryRoots: [],
       env: {},
     });
     expect(policy.workspaceRoot).toBe(realpathSync(root));
@@ -135,6 +137,7 @@ describe("Sandbox policy", () => {
       sessionCwd: linked,
       homeDir: home,
       temporaryDir: temporary,
+      standardTemporaryRoots: [],
       env: {},
     });
     expect(policy.workspaceRoot).toBe(realpathSync(linked));
@@ -202,6 +205,7 @@ describe("Sandbox policy", () => {
   it("normalizes the configured and standard temporary roots", async () => {
     const workspace = directory("temporary-workspace");
     const temporary = directory("temporary-root");
+    const standardTemporary = directory("standard-temporary-root");
     const alias = join(dirname(temporary), `${basename(temporary)}-alias`);
     directories.push(alias);
     symlinkSync(temporary, alias);
@@ -209,16 +213,14 @@ describe("Sandbox policy", () => {
       sessionCwd: workspace,
       homeDir: directory("temporary-home"),
       temporaryDir: alias,
+      standardTemporaryRoots: [standardTemporary],
       env: { TMPDIR: alias },
     });
     const canonicalTemporary = realpathSync(temporary);
-    expect(policy.temporaryRoots).toEqual(
-      expect.arrayContaining([
-        canonicalTemporary,
-        realpathSync("/tmp"),
-        realpathSync("/var/tmp"),
-      ]),
-    );
+    expect(policy.temporaryRoots).toEqual([
+      canonicalTemporary,
+      realpathSync(standardTemporary),
+    ]);
     expect(
       policy.temporaryRoots.filter((root) => root === canonicalTemporary),
     ).toHaveLength(1);
@@ -252,6 +254,7 @@ describe("Sandbox policy", () => {
       sessionCwd: workspace,
       homeDir: home,
       temporaryDir: temporary,
+      standardTemporaryRoots: [],
       env: {
         npm_config_cache: npm,
         XDG_CACHE_HOME: xdgCache,
@@ -360,6 +363,7 @@ describe("Sandbox policy", () => {
     const policy = await resolveSandboxPolicy({
       sessionCwd: alias,
       temporaryDir: root,
+      standardTemporaryRoots: [],
       env: { npm_config_cache: join(root, "cache") },
     });
     expect(policy.sessionCwd).toBe(realpathSync(root));
@@ -387,6 +391,7 @@ describe("Sandbox policy", () => {
       sessionCwd: root,
       homeDir: home,
       temporaryDir: root,
+      standardTemporaryRoots: [],
       env: {
         npm_config_cache: dangling,
         XDG_CACHE_HOME: join(parent, "cache"),
@@ -405,6 +410,7 @@ describe("Sandbox policy", () => {
     await expect(
       resolveSandboxPolicy({
         sessionCwd: root,
+        standardTemporaryRoots: [],
         gitRunner: async () => ({
           exitCode: 1,
           stdout: "",

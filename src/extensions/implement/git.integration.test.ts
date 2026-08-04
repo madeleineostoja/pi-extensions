@@ -237,16 +237,17 @@ describe("git helpers", () => {
     const dir = temporaryDirectory("pipkin-implement-git-cancel-");
     const marker = join(dir, "marker");
     const pidPath = join(dir, "pid");
+    const exitPath = join(dir, "exited");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
     writeFileSync(
       script,
-      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, pidPath, release] = process.argv.slice(2);\nwriteFileSync(pidPath, String(process.pid));\nappendFileSync(marker, "started\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, pidPath, exitPath, release] = process.argv.slice(2);\nprocess.on("SIGTERM", () => { writeFileSync(exitPath, String(process.pid)); process.exit(0); });\nwriteFileSync(pidPath, String(process.pid));\nappendFileSync(marker, "started\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
     );
     const controller = new AbortController();
     const process = new GitProcess(cwd);
     const command = process.run(
-      ["-c", holdAlias(script), "hold", marker, pidPath, release],
+      ["-c", holdAlias(script), "hold", marker, pidPath, exitPath, release],
       { cwd, signal: controller.signal },
     );
     const observation = observePromise("cancelled command", command);
@@ -274,17 +275,17 @@ describe("git helpers", () => {
         diagnostics: observation.describe,
       });
       await waitForCondition(
-        "owned Git child termination",
-        () => !processIsAlive(startedChildPid),
+        "owned Git child exit acknowledgement",
+        () => existsSync(exitPath),
         { diagnostics: observation.describe },
       );
+      expect(readFileSync(exitPath, "utf-8")).toBe(String(startedChildPid));
     } finally {
       writeFileSync(release, "go");
       controller.abort();
-      if (childPid && processIsAlive(childPid)) {
+      if (childPid && !existsSync(exitPath) && processIsAlive(childPid)) {
         globalThis.process.kill(childPid, "SIGKILL");
       }
-      const cleanupChildPid = childPid;
       await settleAll([
         settle("cancelled command", command, {
           diagnostics: observation.describe,
@@ -292,15 +293,6 @@ describe("git helpers", () => {
         settle("cancelled Git queue", process.onIdle(), {
           diagnostics: observation.describe,
         }),
-        ...(cleanupChildPid
-          ? [
-              waitForCondition(
-                "owned Git child termination during cleanup",
-                () => !processIsAlive(cleanupChildPid),
-                { diagnostics: observation.describe },
-              ),
-            ]
-          : []),
       ]);
     }
   });
