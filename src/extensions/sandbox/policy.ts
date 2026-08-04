@@ -200,9 +200,12 @@ function absoluteDirectory(value: string | undefined): string | undefined {
   }
 }
 
-function cacheRoot(
-  value: string,
-): Readonly<{ path: string; creationRoots: readonly string[] }> | undefined {
+type RootCandidate = Readonly<{
+  path: string;
+  creationRoots: readonly string[];
+}>;
+
+function rootCandidate(value: string): RootCandidate | undefined {
   if (!isAbsolute(value)) {
     return undefined;
   }
@@ -322,15 +325,48 @@ export async function resolveSandboxPolicy(
       ),
     ].filter((root): root is string => root !== undefined),
   );
+  const protectedGhCandidates = [
+    env.GH_CONFIG_DIR ||
+      (env.XDG_CONFIG_HOME
+        ? join(env.XDG_CONFIG_HOME, "gh")
+        : join(home, ".config", "gh")),
+    env.XDG_DATA_HOME
+      ? join(env.XDG_DATA_HOME, "gh")
+      : join(home, ".local", "share", "gh"),
+  ]
+    .map(rootCandidate)
+    .filter((root): root is RootCandidate => root !== undefined);
+  const doesNotOverlapProtectedGhRoot = (candidate: RootCandidate): boolean =>
+    !protectedGhCandidates.some(
+      (protectedRoot) =>
+        isUnder(candidate.path, protectedRoot.path) ||
+        isUnder(protectedRoot.path, candidate.path),
+    );
   const cacheCandidates = [
     env.npm_config_cache ?? join(home, ".npm"),
-    env.XDG_CACHE_HOME,
     join(home, "Library", "pnpm", "store"),
     join(home, "Library", "Caches", "pnpm"),
+    env.XDG_CACHE_HOME
+      ? join(env.XDG_CACHE_HOME, "gh")
+      : join(home, ".cache", "gh"),
   ]
-    .flatMap((root) => (root ? [cacheRoot(root)] : []))
-    .filter((root): root is NonNullable<typeof root> => root !== undefined);
+    .map(rootCandidate)
+    .filter(
+      (root): root is RootCandidate =>
+        root !== undefined && doesNotOverlapProtectedGhRoot(root),
+    );
   const cacheRoots = normalizeRoots(cacheCandidates.map((root) => root.path));
+  const stateCandidates = [
+    env.XDG_STATE_HOME
+      ? join(env.XDG_STATE_HOME, "gh")
+      : join(home, ".local", "state", "gh"),
+  ]
+    .map(rootCandidate)
+    .filter(
+      (root): root is RootCandidate =>
+        root !== undefined && doesNotOverlapProtectedGhRoot(root),
+    );
+  const stateRoots = normalizeRoots(stateCandidates.map((root) => root.path));
   const dependencyRoots = git
     ? await dependencyInstallationRoots(workspaceRoot, gitRunner)
     : [];
@@ -339,12 +375,13 @@ export async function resolveSandboxPolicy(
     ...(git ? [git.worktreeGitDir, git.commonGitDir] : []),
     ...temporaryRoots,
     ...cacheRoots,
+    ...stateRoots,
     ...dependencyRoots,
   ]);
   const recursiveRoots = new Set(writableRoots);
   const creationRoots = Object.freeze([
     ...new Set(
-      cacheCandidates.flatMap((root) =>
+      [...cacheCandidates, ...stateCandidates].flatMap((root) =>
         recursiveRoots.has(root.path) ? root.creationRoots.slice(0, -1) : [],
       ),
     ),
