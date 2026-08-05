@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { addExchange, getHistory, getSessionKey } from "./state.js";
 import { buildPrompt } from "./prompt.js";
 import { completeText } from "#lib/complete";
 import { BtwPanel } from "./panel.js";
+import { promotedBtwMessage } from "./promotion.js";
 
 type ActiveBtw = {
   abort: () => void;
@@ -50,9 +50,6 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
       }
 
       closeActive();
-      const sessionKey = getSessionKey(ctx.sessionManager);
-      const priorExchanges = [...getHistory(sessionKey)];
-
       await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
         const abortController = new AbortController();
         let panel: BtwPanel | undefined;
@@ -75,19 +72,24 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
           }
           done();
         };
+        const promote = (exchange: { question: string; answer: string }) => {
+          pi.sendMessage(promotedBtwMessage(exchange), {
+            deliverAs: "steer",
+            triggerTurn: false,
+          });
+        };
         panel = new BtwPanel(
           tui,
           theme,
           close,
           {
             question,
-            history: priorExchanges,
             status: "pending",
             answerText: "",
             errorText: "",
-            scrollOffset: 0,
           },
           abortController,
+          promote,
         );
         active = { abort: () => abortController.abort(), close };
 
@@ -106,12 +108,7 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
               });
               return;
             }
-            const prompt = buildPrompt(
-              ctx.sessionManager,
-              priorExchanges,
-              question,
-              model,
-            );
+            const prompt = buildPrompt(ctx.sessionManager, question, model);
             const result = await completeText(model, prompt.context, {
               apiKey: auth.apiKey,
               headers: auth.headers,
@@ -128,7 +125,6 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
               });
               return;
             }
-            addExchange(sessionKey, { question, answer: result.text });
             panel?.setState({ status: "answer", answerText: result.text });
           } catch (error) {
             if (!isCurrent()) {

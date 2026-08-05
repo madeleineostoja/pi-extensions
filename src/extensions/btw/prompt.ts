@@ -1,7 +1,6 @@
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Message, UserMessage } from "@earendil-works/pi-ai";
-import type { BtwExchange } from "./state.js";
 
 const SYSTEM_PROMPT =
   "You are answering a side question about the current coding session. " +
@@ -35,41 +34,6 @@ function questionMessage(question: string): UserMessage {
     content: [{ type: "text", text: question }],
     timestamp: Date.now(),
   };
-}
-
-function sideThread(exchange: BtwExchange): readonly Message[] {
-  return [
-    {
-      role: "user",
-      content: [
-        { type: "text", text: `Previous side question: ${exchange.question}` },
-      ],
-      timestamp: Date.now(),
-    },
-    {
-      role: "assistant",
-      content: [{ type: "text", text: exchange.answer }],
-      api: "openai-responses",
-      provider: "openai",
-      model: "side-thread",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          total: 0,
-        },
-      },
-      stopReason: "stop",
-      timestamp: Date.now(),
-    },
-  ];
 }
 
 function toolCallIds(message: Message): readonly string[] | null | undefined {
@@ -127,12 +91,11 @@ function sessionGroups(messages: readonly Message[]): readonly Message[][] {
 
 function contextFor(
   sessionMessages: readonly Message[],
-  sideMessages: readonly Message[],
   currentQuestion: UserMessage,
 ): Context {
   return {
     systemPrompt: SYSTEM_PROMPT,
-    messages: [...sessionMessages, ...sideMessages, currentQuestion],
+    messages: [...sessionMessages, currentQuestion],
     tools: [],
   };
 }
@@ -154,7 +117,7 @@ function fitNewest<T>(
 
 function boundedQuestion(question: string, inputLimit: number): UserMessage {
   const fits = (value: string) =>
-    estimateTokens(contextFor([], [], questionMessage(value))) <= inputLimit;
+    estimateTokens(contextFor([], questionMessage(value))) <= inputLimit;
   if (fits(question)) {
     return questionMessage(question);
   }
@@ -175,7 +138,6 @@ function boundedQuestion(question: string, inputLimit: number): UserMessage {
 
 export function buildPrompt(
   sessionManager: ExtensionContext["sessionManager"],
-  priorExchanges: readonly BtwExchange[],
   question: string,
   model: ContextModel,
 ): BtwPrompt {
@@ -204,32 +166,16 @@ export function buildPrompt(
     model.contextWindow - maxTokens - overheadTokens,
   );
   const currentQuestion = boundedQuestion(question, inputLimit);
-  const sideGroups = priorExchanges.map(sideThread);
-  const retainedSideGroups = fitNewest(
-    sideGroups,
-    (candidate) =>
-      estimateTokens(contextFor([], candidate.flat(), currentQuestion)) <=
-      inputLimit,
-  );
   const groups = sessionGroups(sessionMessages);
   const retainedSessionGroups = fitNewest(
     groups,
     (candidate) =>
-      estimateTokens(
-        contextFor(
-          candidate.flat(),
-          retainedSideGroups.flat(),
-          currentQuestion,
-        ),
-      ) <= inputLimit,
+      estimateTokens(contextFor(candidate.flat(), currentQuestion)) <=
+      inputLimit,
   );
 
   return {
-    context: contextFor(
-      retainedSessionGroups.flat(),
-      retainedSideGroups.flat(),
-      currentQuestion,
-    ),
+    context: contextFor(retainedSessionGroups.flat(), currentQuestion),
     maxTokens,
     overheadTokens,
   };

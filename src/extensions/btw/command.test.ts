@@ -7,7 +7,6 @@ import type {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { completeText } from "#lib/complete";
 import { registerBtwCommand } from "./command.js";
-import { getHistory } from "./state.js";
 
 const completeTextMock = vi.mocked(completeText);
 
@@ -52,6 +51,7 @@ function fixture() {
     (args: string, ctx: ExtensionCommandContext) => Promise<void>
   >();
   const handlers = new Map<string, () => void>();
+  const sendMessage = vi.fn();
   const pi = {
     on: (event: string, handler: () => void) => handlers.set(event, handler),
     registerCommand: (
@@ -60,22 +60,19 @@ function fixture() {
         handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
       },
     ) => commands.set(name, command.handler),
+    sendMessage,
   } as unknown as ExtensionAPI;
   registerBtwCommand(pi);
-  return { command: commands.get("btw")!, handlers };
+  return { command: commands.get("btw")!, handlers, sendMessage };
 }
-
-let nextSession = 1;
 
 function context(
   custom: ReturnType<typeof customFixture>,
   auth?: Promise<unknown>,
 ) {
   const notify = vi.fn();
-  const sessionKey = `/tmp/btw-session-${nextSession++}.json`;
   return {
     notify,
-    sessionKey,
     value: {
       mode: "tui",
       model: {
@@ -97,8 +94,6 @@ function context(
           thinkingLevel: "off",
           model: null,
         }),
-        getSessionFile: () => sessionKey,
-        getSessionId: () => sessionKey,
       },
     } as unknown as ExtensionCommandContext,
   };
@@ -109,20 +104,18 @@ async function flush() {
   await Promise.resolve();
 }
 
-beforeEach(() => {
-  vi.resetAllMocks();
-});
-
+beforeEach(() => vi.resetAllMocks());
 afterEach(() => vi.resetAllMocks());
 
 describe("/btw", () => {
-  it("rejects invalid or non-TUI invocations before opening a surface", async () => {
+  it("rejects invalid, non-TUI, and model-less invocations before opening a surface", async () => {
     const { command } = fixture();
     const custom = customFixture();
     const { value, notify } = context(custom);
 
     await command("", value);
     await command("question", { ...value, mode: "json" });
+    await command("question", { ...value, model: undefined });
 
     expect(custom.custom).not.toHaveBeenCalled();
     expect(notify).toHaveBeenNthCalledWith(
@@ -135,17 +128,8 @@ describe("/btw", () => {
       "/btw requires a TUI session",
       "warning",
     );
-  });
-
-  it("reports a missing model before opening the panel", async () => {
-    const { command } = fixture();
-    const custom = customFixture();
-    const { value, notify } = context(custom);
-
-    await command("question", { ...value, model: undefined });
-
-    expect(custom.custom).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
+    expect(notify).toHaveBeenNthCalledWith(
+      3,
       "No active model. Set a model first.",
       "warning",
     );
@@ -183,12 +167,11 @@ describe("/btw", () => {
 
     const running = command("question", value);
     expect(
-      custom.component?.render(80).some((line) => line.includes("thinking")),
+      custom.component?.render(80).some((line) => line.includes("Thinking")),
     ).toBe(true);
     expect(value.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 
     await flush();
-    expect(value.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledOnce();
     resolveAuth({ ok: true, apiKey: "key", headers: {} });
     completeTextMock.mockResolvedValue({
       ok: true,
@@ -199,7 +182,6 @@ describe("/btw", () => {
     custom.close();
     await running;
 
-    expect(completeTextMock).toHaveBeenCalledOnce();
     expect(completeTextMock).toHaveBeenCalledWith(
       value.model,
       expect.anything(),
@@ -207,55 +189,67 @@ describe("/btw", () => {
     );
   });
 
-  it("keeps successful exchanges only in the session-keyed side thread", async () => {
+  it("does not thread an earlier side exchange into a later request", async () => {
     const { command } = fixture();
     const custom = customFixture();
-    const { value, sessionKey } = context(custom);
+    const { value } = context(custom);
     completeTextMock.mockResolvedValue({
       ok: true,
-      text: "answer",
+      text: "first answer",
+      stopReason: "stop",
+    } as never);
+
+    const first = command("first question", value);
+    await flush();
+    await flush();
+    custom.close();
+    await first;
+
+    const second = command("second question", value);
+    await flush();
+    await flush();
+    const prompt = completeTextMock.mock.calls[1]?.[1];
+    custom.close();
+    await second;
+
+    expect(JSON.stringify(prompt)).not.toContain("first question");
+    expect(JSON.stringify(prompt)).not.toContain("first answer");
+  });
+
+  it("promotes a completed exchange once as non-turn steering", async () => {
+    const { command, sendMessage } = fixture();
+    const custom = customFixture();
+    const { value } = context(custom);
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "**answer**",
       stopReason: "stop",
     } as never);
 
     const running = command("question", value);
     await flush();
     await flush();
-    custom.close();
+    custom.component?.handleInput?.("s");
+    custom.component?.handleInput?.("s");
     await running;
 
-    expect(getHistory(sessionKey)).toEqual([
-      { question: "question", answer: "answer" },
-    ]);
-  });
-
-  it("cancels and rejects stale completion after session replacement", async () => {
-    const { command, handlers } = fixture();
-    const custom = customFixture();
-    const { value, sessionKey } = context(custom);
-    let resolveCompletion: (value: any) => void = () => {};
-    completeTextMock.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveCompletion = resolve;
-        }),
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "btw",
+        display: true,
+        content: expect.stringContaining(
+          "Question:\nquestion\n\nAnswer:\n**answer**",
+        ),
+      }),
+      { deliverAs: "steer", triggerTurn: false },
     );
-
-    const running = command("question", value);
-    await flush();
-    handlers.get("session_start")?.();
-    resolveCompletion({ ok: true, text: "stale", stopReason: "stop" });
-    await running;
-
-    expect(getHistory(sessionKey)).toEqual([]);
-    expect(
-      custom.component?.render(80).some((line) => line.includes("stale")),
-    ).toBe(false);
   });
 
-  it("cancels and rejects stale completion after session shutdown", async () => {
+  it("cancels and rejects stale completion after shutdown", async () => {
     const { command, handlers } = fixture();
     const custom = customFixture();
-    const { value, sessionKey } = context(custom);
+    const { value } = context(custom);
     let resolveCompletion: (value: any) => void = () => {};
     completeTextMock.mockImplementation(
       () =>
@@ -270,7 +264,6 @@ describe("/btw", () => {
     resolveCompletion({ ok: true, text: "stale", stopReason: "stop" });
     await running;
 
-    expect(getHistory(sessionKey)).toEqual([]);
     expect(
       custom.component?.render(80).some((line) => line.includes("stale")),
     ).toBe(false);

@@ -74,7 +74,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 - **UI** presents compact session status and bounded live activity.
 - **Personality** greets fresh sessions and gives unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
-- **BTW** answers a transcript-independent side question with the current model and session context.
+- **BTW** answers one ephemeral side question with the current model and session context; press `s` after completion to promote a useful exchange into the transcript and context.
 
 [Interface and Personality →](docs/features/interface-and-personality.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
@@ -82,15 +82,15 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Slash commands
 
-| Command               | Purpose                                                        |
-| --------------------- | -------------------------------------------------------------- |
-| `/sandbox [on\|off]`  | Inspect or change Sandbox mode for the current session         |
-| `/readonly [on\|off]` | Inspect or change confirmation for `edit` and `write`          |
-| `/processes`          | Inspect and stop current-session managed processes             |
-| `/agents`             | Inspect activity/results, guide, or stop managed agents        |
-| `/implement …`        | Start, inspect, stop, restart, or clean Implement runs         |
-| `/papercuts`          | Browse and close recorded Papercut findings                    |
-| `/btw <question>`     | Ask an ephemeral side question without changing the transcript |
+| Command               | Purpose                                                                   |
+| --------------------- | ------------------------------------------------------------------------- |
+| `/sandbox [on\|off]`  | Inspect or change Sandbox mode for the current session                    |
+| `/readonly [on\|off]` | Inspect or change confirmation for `edit` and `write`                     |
+| `/processes`          | Inspect and stop current-session managed processes                        |
+| `/agents`             | Inspect activity/results, guide, or stop managed agents                   |
+| `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
+| `/papercuts`          | Browse and close recorded Papercut findings                               |
+| `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 
 ### Keyboard shortcut
 

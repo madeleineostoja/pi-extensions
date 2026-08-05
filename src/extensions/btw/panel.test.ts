@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { BtwPanel } from "./panel.js";
@@ -18,9 +18,11 @@ function panel(
   } as unknown as TUI;
   const abort = new AbortController();
   const done = vi.fn();
+  const promote = vi.fn();
   return {
     abort,
     done,
+    promote,
     tui,
     value: new BtwPanel(
       tui,
@@ -28,77 +30,74 @@ function panel(
       done,
       {
         question: "What changed?",
-        history: [],
         status: "pending",
         answerText: "",
         errorText: "",
-        scrollOffset: 0,
         ...overrides,
       },
       abort,
+      promote,
       12,
     ),
   };
 }
 
+beforeAll(() => initTheme("dark", false));
+
 describe("BtwPanel", () => {
-  it("uses a bounded Panel with distinct question and pending state", () => {
-    const value = panel().value;
-    const lines = value.render(30);
+  it("renders a wrapped muted quote question and pending state", () => {
+    const value = panel({
+      question: "What changed in this very long implementation today?",
+    }).value;
+    const lines = value.render(20);
 
     expect(lines.some((line) => line.includes("/btw"))).toBe(true);
-    expect(lines.some((line) => line.includes("Question"))).toBe(true);
-    expect(lines.some((line) => line.includes("Status · thinking"))).toBe(true);
-    expect(
-      value.render(80).some((line) => line.includes("clear history")),
-    ).toBe(false);
-    expect(lines.every((line) => visibleWidth(line) <= 30)).toBe(true);
-    expect(lines.join("\n")).not.toMatch(/[│╭╮╰╯]/u);
-  });
-
-  it("keeps retained history quiet and makes the answer dominant", () => {
-    const value = panel({
-      status: "answer",
-      answerText: "Current answer",
-      history: [{ question: "Earlier?", answer: "Earlier answer" }],
-    }).value;
-    const current = value.render(80);
-    value.handleInput("\x1b[H");
-    const history = value.render(80);
-
-    expect(history.some((line) => line.includes("Earlier?"))).toBe(true);
-    expect(history.some((line) => line.includes("Earlier answer"))).toBe(true);
-    expect(current.some((line) => line.includes("Current answer"))).toBe(true);
-  });
-
-  it("scrolls retained history", () => {
-    const value = panel({
-      history: Array.from({ length: 8 }, (_, index) => ({
-        question: `q${index}`,
-        answer: `a${index}`,
-      })),
-    });
-
-    expect(value.value.render(80).some((line) => line.includes("q0"))).toBe(
-      false,
+    expect(lines.filter((line) => line.includes("│")).length).toBeGreaterThan(
+      1,
     );
-    for (let index = 0; index < 20; index += 1) {
-      value.value.handleInput("\x1b[A");
-    }
-    expect(value.value.render(80).some((line) => line.includes("q0"))).toBe(
+    expect(lines.some((line) => line.includes("Thinking"))).toBe(true);
+    expect(lines.every((line) => visibleWidth(line) <= 20)).toBe(true);
+  });
+
+  it("renders Markdown answers in a shared scroll view", () => {
+    const answer = Array.from(
+      { length: 20 },
+      (_, index) => `- **line ${index}**`,
+    ).join("\n");
+    const value = panel({ status: "answer", answerText: answer }).value;
+
+    expect(value.render(40).some((line) => line.includes("line 19"))).toBe(
       true,
     );
+    for (let index = 0; index < 20; index += 1) {
+      value.handleInput("\x1b[A");
+    }
+    expect(value.render(40).some((line) => line.includes("line 0"))).toBe(true);
   });
 
-  it("aborts pending work on close and ignores later state", () => {
-    const value = panel();
-    value.value.handleInput("\x1b");
-    value.value.setState({ status: "answer", answerText: "stale" });
+  it("promotes a completed exchange once and closes the panel", () => {
+    const fixture = panel({ status: "answer", answerText: "**Answer**" });
 
-    expect(value.abort.signal.aborted).toBe(true);
-    expect(value.done).toHaveBeenCalledOnce();
-    expect(value.value.render(80).some((line) => line.includes("stale"))).toBe(
-      false,
-    );
+    fixture.value.handleInput("s");
+    fixture.value.handleInput("s");
+
+    expect(fixture.promote).toHaveBeenCalledOnce();
+    expect(fixture.promote).toHaveBeenCalledWith({
+      question: "What changed?",
+      answer: "**Answer**",
+    });
+    expect(fixture.done).toHaveBeenCalledOnce();
+  });
+
+  it("aborts pending work on close and ignores late state", () => {
+    const fixture = panel();
+    fixture.value.handleInput("\x1b");
+    fixture.value.setState({ status: "answer", answerText: "stale" });
+
+    expect(fixture.abort.signal.aborted).toBe(true);
+    expect(fixture.done).toHaveBeenCalledOnce();
+    expect(
+      fixture.value.render(80).some((line) => line.includes("stale")),
+    ).toBe(false);
   });
 });

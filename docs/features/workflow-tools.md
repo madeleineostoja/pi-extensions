@@ -77,14 +77,14 @@ The paths are excluded through common Git `info/exclude`, not committed `.gitign
 
 ## BTW
 
-`/btw` asks a side question without adding the exchange to the main transcript:
+`/btw` asks one ephemeral side question without adding it to the main transcript:
 
 ```text
 /btw Why did we choose a file lease here?
 ```
 
-Pipkin sends the current model a bounded view of session context and prior BTW exchanges, then shows the answer in a disposable full-screen surface. The exchange does not trigger the primary agent or affect later model turns.
+Pipkin sends the current model a bounded view of the current session context and the question, then shows the Markdown answer in a disposable surface. Each invocation is independent: an unpromoted exchange is neither retained nor supplied to later BTW questions.
 
-BTW has no tools: it cannot inspect files, run commands, or mutate state beyond what is already in supplied context. Use Explore when the side task needs tools.
+After a completed answer, press `s` to promote the complete question and answer into one displayed `btw` transcript message. That message becomes ordinary session context without starting a turn while idle; during a response it is delivered as steering. Press Escape to abort generation or close the completed surface; arrow keys scroll the answer.
 
-Escape closes or aborts, arrow keys scroll, and `x` clears process-local BTW history. Session replacement and shutdown dispose the active surface. BTW requires an interactive session, active model, and usable authentication.
+BTW has no tools: it cannot inspect files, run commands, or mutate state beyond what is already in supplied context. Use Explore when the side task needs tools. Session replacement and shutdown dispose the active surface. BTW requires an interactive session, active model, and usable authentication.

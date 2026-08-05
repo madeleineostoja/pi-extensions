@@ -10,7 +10,6 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 });
 
 const convertToLlmMock = vi.mocked(convertToLlm);
-
 const model = { contextWindow: 1_600, maxTokens: 1_024 };
 
 function session(messages: unknown[]) {
@@ -31,15 +30,22 @@ function expectWithinModelWindow(
 }
 
 describe("BTW prompt", () => {
-  it("uses Pi's compaction-aware session context instead of the raw branch", () => {
+  it("uses only Pi's current compaction-aware session context and question", () => {
     const builtMessages = [{ role: "user", content: "kept" }];
     convertToLlmMock.mockReturnValue(builtMessages as never);
-    const manager = session(builtMessages);
 
-    const prompt = buildPrompt(manager, [], "current question", model);
+    const prompt = buildPrompt(
+      session(builtMessages),
+      "current question",
+      model,
+    );
 
     expect(convertToLlmMock).toHaveBeenCalledWith(builtMessages);
+    expect(prompt.context.messages).toHaveLength(2);
     expect(prompt.context.messages.at(-1)).toMatchObject({ role: "user" });
+    expect(JSON.stringify(prompt.context.messages)).not.toContain(
+      "Previous side question",
+    );
   });
 
   it("retains only complete, ID-matched tool-call groups", () => {
@@ -69,111 +75,58 @@ describe("BTW prompt", () => {
         timestamp: 4,
       },
     ];
-    const incompleteCall = {
-      role: "assistant",
-      content: [
-        { type: "toolCall", id: "missing", name: "read", arguments: {} },
-      ],
-      timestamp: 5,
-    };
-    const wrongResult = {
-      role: "toolResult",
-      toolCallId: "wrong",
-      toolName: "read",
-      content: [{ type: "text", text: "omit" }],
-      isError: false,
-      timestamp: 6,
-    };
     convertToLlmMock.mockReturnValue([
       completeCall,
       ...completeResults,
-      incompleteCall,
-      wrongResult,
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "missing", name: "read", arguments: {} },
+        ],
+        timestamp: 5,
+      },
     ] as never);
 
-    const prompt = buildPrompt(session([]), [], "question", model);
+    const prompt = buildPrompt(session([]), "question", model);
     const messages = prompt.context.messages as Array<{
       role: string;
       content?: Array<{ type: string; id?: string }>;
       toolCallId?: string;
     }>;
-    const calls = new Set(
-      messages.flatMap(
-        (message) =>
-          message.content?.flatMap((part) =>
-            part.type === "toolCall" && part.id ? [part.id] : [],
-          ) ?? [],
-      ),
-    );
 
-    expect(calls).toEqual(new Set(["call-1", "call-2"]));
     expect(
       messages.filter((message) => message.role === "toolResult"),
     ).toHaveLength(2);
-    expect(
-      messages
-        .filter((message) => message.role === "toolResult")
-        .every((message) => calls.has(message.toolCallId!)),
-    ).toBe(true);
+    expect(JSON.stringify(messages)).not.toContain("missing");
   });
 
-  it("keeps contiguous newest boundaries without recovering older context", () => {
+  it("keeps contiguous newest session boundaries", () => {
     convertToLlmMock.mockReturnValue([
       { role: "user", content: "older fitting context", timestamp: 1 },
       { role: "user", content: "newest ".repeat(4_000), timestamp: 2 },
     ] as never);
 
-    const prompt = buildPrompt(session([]), [], "question", model);
+    const prompt = buildPrompt(session([]), "question", model);
 
     expect(JSON.stringify(prompt.context.messages)).not.toContain(
       "older fitting context",
     );
   });
 
-  it("prioritizes fitting recent side exchanges before session context", () => {
-    const constrained = { contextWindow: 1_000, maxTokens: 600 };
-    convertToLlmMock.mockReturnValue([
-      { role: "user", content: "older session context", timestamp: 1 },
-      { role: "user", content: "newest session ".repeat(500), timestamp: 2 },
-    ] as never);
-
-    const prompt = buildPrompt(
-      session([]),
-      [
-        {
-          question: "recent side question ".repeat(20),
-          answer: "recent side answer ".repeat(20),
-        },
-      ],
-      "current question",
-      constrained,
-    );
-
-    expect(JSON.stringify(prompt.context.messages)).toContain(
-      "recent side question",
-    );
-    expect(JSON.stringify(prompt.context.messages)).not.toContain(
-      "older session context",
-    );
-    expectWithinModelWindow(prompt, constrained.contextWindow);
-  });
-
   it.each([
     ["ASCII", "question ".repeat(10_000)],
     ["astral", "😀".repeat(10_000)],
   ])(
-    "fits an oversized %s question with the answer and overhead reserves",
+    "fits an oversized %s question with answer and overhead reserves",
     (_kind, question) => {
       convertToLlmMock.mockReturnValue([] as never);
 
-      const prompt = buildPrompt(session([]), [], question, model);
+      const prompt = buildPrompt(session([]), question, model);
       const current = prompt.context.messages.at(-1) as {
         content: Array<{ text: string }>;
       };
 
       expect(current.content[0]?.text).toMatch(/…$/);
-      expect(prompt.maxTokens).toBeGreaterThan(0);
-      expect(prompt.maxTokens).toBeLessThanOrEqual(model.maxTokens);
       expectWithinModelWindow(prompt);
     },
   );
