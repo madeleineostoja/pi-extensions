@@ -24,9 +24,17 @@ export function formatReadonlyTarget(
   if (!normalized) {
     return undefined;
   }
-  return normalized.length <= MAX_TARGET_DISPLAY_LENGTH
-    ? normalized
-    : `${normalized.slice(0, MAX_TARGET_DISPLAY_LENGTH - 1)}…`;
+  if (normalized.length <= MAX_TARGET_DISPLAY_LENGTH) {
+    return normalized;
+  }
+  let prefix = "";
+  for (const character of normalized) {
+    if (prefix.length + character.length >= MAX_TARGET_DISPLAY_LENGTH) {
+      break;
+    }
+    prefix += character;
+  }
+  return `${prefix}…`;
 }
 
 export function formatSteerTitle(path: string | undefined): string {

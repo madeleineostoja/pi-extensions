@@ -12,7 +12,15 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fsSpies = vi.hoisted(() => ({ readdirSync: vi.fn() }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  fsSpies.readdirSync.mockImplementation(actual.readdirSync);
+  return { ...actual, readdirSync: fsSpies.readdirSync };
+});
 import { formatStatus } from "./controls.js";
 import { plannerAttemptPath } from "./execution-plan.js";
 import { checkoutPaths } from "./store.js";
@@ -151,6 +159,26 @@ describe("inspect_implement_run", () => {
       phase: "running",
       truncated: false,
     });
+  });
+
+  it("uses one active-run snapshot for targeted phase text and details", async () => {
+    const run = await fixture();
+    const state = run.store.read();
+    state.phase = "failed";
+    state.failure = {
+      category: "runtime",
+      reason: "Inspection snapshot failure.",
+      originPhase: "running",
+      at: "2026-01-01T00:00:00.000Z",
+    };
+    writeFileSync(run.store.path, `${JSON.stringify(state, null, 2)}\n`);
+    fsSpies.readdirSync.mockClear();
+
+    const result = inspectImplementRun(run.root, { runId: "run-1" });
+
+    expect(result.content[0].text).toContain("Phase: failed");
+    expect(result.details.phase).toBe("failed");
+    expect(fsSpies.readdirSync).not.toHaveBeenCalled();
   });
 
   it("marks absent planning artifacts as not retained", async () => {

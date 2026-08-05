@@ -53,11 +53,13 @@ type ToolCall = { name: string; arguments: unknown };
 type RecallSourceDisplay = {
   toolName?: string;
   target: string;
+  command?: string;
   fullToolCallId: string;
 };
 type RenderSource = {
   toolName?: string;
   target: string;
+  command?: string;
   fullToolCallId?: string;
 };
 type RenderSelector = {
@@ -226,6 +228,12 @@ export function registerRecallTool(pi: ExtensionAPI): void {
             : undefined,
           selectorAccounting(details?.selector),
         ].filter((line): line is string => line !== undefined);
+      },
+      expandedCompleteDetails(result) {
+        const source = renderDetails(result.details)?.source;
+        return source?.command
+          ? `source command: ${source.command}`
+          : undefined;
       },
     }),
   });
@@ -422,6 +430,7 @@ function resolveSourceDisplay(
       fullToolCallId: id,
       toolName: toolCall.name,
       target: formatBashTarget(command),
+      command: controlSafeText(command) || "Bash command",
     };
   }
   const toolName = safeToolName(toolCall.name);
@@ -589,12 +598,9 @@ function formatSearchQuery(value: string): string {
 }
 
 function controlSafeText(value: string): string {
-  return Array.from(stripVTControlCharacters(value), (character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
-      ? " "
-      : character;
-  })
+  return Array.from(stripVTControlCharacters(value), (character) =>
+    /\p{C}/u.test(character) ? " " : character,
+  )
     .join("")
     .replace(/\s+/gu, " ")
     .trim();
@@ -652,6 +658,10 @@ function renderSource(
     typeof value.toolName === "string"
       ? safeToolName(value.toolName)
       : undefined;
+  const command =
+    typeof value.command === "string"
+      ? controlSafeText(value.command)
+      : undefined;
   const fullToolCallId =
     typeof value.fullToolCallId === "string"
       ? controlSafeText(value.fullToolCallId)
@@ -659,6 +669,7 @@ function renderSource(
   return {
     target: formatBashTarget(value.target),
     ...(toolName === undefined ? {} : { toolName }),
+    ...(command === undefined || command === "" ? {} : { command }),
     ...(fullToolCallId === undefined || fullToolCallId === ""
       ? {}
       : { fullToolCallId }),

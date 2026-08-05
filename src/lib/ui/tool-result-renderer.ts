@@ -19,6 +19,10 @@ type RendererOptions = {
   error?: (result: ResultLike, context: RenderContext) => Summary;
   content?: "text" | "markdown";
   expandedDetails?: (result: ResultLike, context: RenderContext) => Summary;
+  expandedCompleteDetails?: (
+    result: ResultLike,
+    context: RenderContext,
+  ) => Summary;
   expandedContent?: (result: ResultLike, context: RenderContext) => unknown;
 };
 
@@ -70,6 +74,11 @@ export function toolResultRenderer(options: RendererOptions) {
     }
     for (const detail of expandedDetailLines(
       options.expandedDetails?.(result, renderContext),
+    )) {
+      view.addChild(new Text(theme.fg("dim", detail), 0, 0));
+    }
+    for (const detail of completeDetailLines(
+      options.expandedCompleteDetails?.(result, renderContext),
     )) {
       view.addChild(new Text(theme.fg("dim", detail), 0, 0));
     }
@@ -130,6 +139,15 @@ function displayLines(value: Summary): string[] {
   return (typeof value === "string" ? [value] : [...value])
     .map((line) => compactDisplayText(line))
     .filter(Boolean);
+}
+
+function completeDetailLines(details: Summary): string[] {
+  if (details === undefined) {
+    return [];
+  }
+  return (typeof details === "string" ? [details] : [...details]).filter(
+    Boolean,
+  );
 }
 
 function textBlocks(content: unknown): TextBlock[] {

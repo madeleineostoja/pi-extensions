@@ -562,6 +562,49 @@ describe("context_recall", () => {
     ).toContain("unavailable");
   });
 
+  it("keeps a complete control-safe Bash command identity expanded", async () => {
+    const command = `${"printf alpha ".repeat(12)}\nprintf beta\n`;
+    const { definition, execute } = recall([
+      toolCall("long-bash-id", "bash_outcome", { command }),
+      toolResult("long-bash-id", [{ type: "text", text: "recalled text" }]),
+    ]);
+    const result = await execute({ id: "long-bash-id", lines: "1" });
+    const theme = {
+      bold: (text: string) => text,
+      fg: (_color: string, text: string) => text,
+    };
+    const collapsed = definition
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(20_000)
+      .join("\n");
+    const expandedLines = definition
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(20_000);
+    const expanded = expandedLines.join("\n");
+    const safeCommand = command.replace(/\s+/g, " ").trim();
+
+    expect(collapsed).toContain("Recalled bash_outcome · lines 1");
+    expect(collapsed).not.toContain("printf alpha");
+    expect(expanded).toContain(`source command: ${safeCommand}`);
+    expect(expanded).toContain("tool call ID: long-bash-id");
+    expect(expanded).toContain("selector: lines 1");
+    expect(expanded).toContain("recalled text");
+    expect(expandedLines.every((line: string) => !/\p{C}/u.test(line))).toBe(
+      true,
+    );
+    expect(result.details).toMatchObject({
+      source: {
+        target: expect.stringMatching(/\[truncated\]$/),
+        command: safeCommand,
+      },
+      selector: { type: "lines", lines: "1" },
+    });
+  });
+
   it("keeps source display metadata separate and uses safe fallbacks", async () => {
     const bash = await recall([
       toolCall("bash-id", "bash", {
@@ -574,6 +617,7 @@ describe("context_recall", () => {
       fullToolCallId: "bash-id",
       toolName: "bash",
       target: "echo hello",
+      command: "echo hello",
     });
 
     const read = await recall([

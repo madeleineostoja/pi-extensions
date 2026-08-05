@@ -13,6 +13,17 @@ export type StoredActivityRecord = ActivityRecord & {
   key: string;
 };
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+type Clock = {
+  now(): number;
+  setTimeout(
+    handler: () => void,
+    milliseconds: number,
+  ): ReturnType<typeof setTimeout>;
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+};
+
 const priority = (state: ActivityState): number =>
   state === "running" ? 0 : state === "waiting" ? 1 : 2;
 
@@ -26,6 +37,14 @@ export class ActivityStore {
   #generations = new Map<string, string>();
   #listeners = new Set<() => void>();
   #clock: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(
+    private readonly clock: Clock = {
+      now: () => Date.now(),
+      setTimeout,
+      clearTimeout,
+    },
+  ) {}
 
   get records(): StoredActivityRecord[] {
     return this.#ordered();
@@ -171,10 +190,10 @@ export class ActivityStore {
 
   #syncClock(): void {
     if (this.#clock !== undefined) {
-      clearTimeout(this.#clock);
+      this.clock.clearTimeout(this.#clock);
       this.#clock = undefined;
     }
-    const now = Date.now();
+    const now = this.clock.now();
     const delays = [...this.#records.values()].flatMap((record) =>
       record.startedAt === undefined
         ? []
@@ -183,7 +202,7 @@ export class ActivityStore {
     if (delays.length === 0) {
       return;
     }
-    this.#clock = setTimeout(
+    this.#clock = this.clock.setTimeout(
       () => {
         this.#clock = undefined;
         if (
@@ -195,7 +214,7 @@ export class ActivityStore {
           this.#syncClock();
         }
       },
-      Math.min(...delays),
+      Math.min(MAX_TIMER_DELAY_MS, ...delays),
     );
     this.#clock.unref?.();
   }

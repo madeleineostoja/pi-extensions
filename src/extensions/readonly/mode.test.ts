@@ -104,6 +104,13 @@ describe("Readonly", () => {
       },
       ctx,
     );
+    await toolCall?.(
+      {
+        toolName: "edit",
+        input: { path: `${"a".repeat(118)}😀${"b".repeat(10)}` },
+      },
+      ctx,
+    );
 
     expect(prompts[0]).toMatch(/^Readonly: apply edit to .+…\?$/);
     expect(prompts[0]!.length).toBeLessThanOrEqual(160);
@@ -112,6 +119,9 @@ describe("Readonly", () => {
     );
     expect(prompts[1]).not.toMatch(/\p{C}/u);
     expect(steerTitles[1]).toBe("Steer the agent — src/unsafe target file.ts");
+    expect(prompts[2]).toBe(`Readonly: apply edit to ${"a".repeat(118)}…?`);
+    expect(prompts[2]!.length).toBeLessThanOrEqual(160);
+    expect(prompts[2]).not.toMatch(/\p{C}/u);
   });
 
   it("clears its namespaced status at shutdown", async () => {

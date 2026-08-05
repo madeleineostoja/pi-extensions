@@ -154,6 +154,45 @@ describe("Activity", () => {
     }
   });
 
+  it("checkpoints far-future duration timers at Node's maximum delay", () => {
+    let now = 100;
+    const scheduled: Array<{ handler: () => void; milliseconds: number }> = [];
+    const clock = {
+      now: () => now,
+      setTimeout: vi.fn((handler: () => void, milliseconds: number) => {
+        scheduled.push({ handler, milliseconds });
+        return scheduled.length;
+      }),
+      clearTimeout: vi.fn(),
+    };
+    const store = new ActivityStore(clock as never);
+    const notify = vi.fn();
+    store.subscribe(notify);
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
+    notify.mockClear();
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "upsert",
+      record: record("future", { startedAt: ACTIVITY_TIMESTAMP_MAX }),
+    });
+
+    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
+    notify.mockClear();
+    now += scheduled.at(-1)!.milliseconds;
+    scheduled.at(-1)!.handler();
+
+    expect(notify).toHaveBeenCalledOnce();
+    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
+    store.dispose();
+  });
+
   it("rejects terminal states and oversized or unsafe fields", () => {
     expect(validateActivityRecord(record("x", { state: "failed" }))).toBe(
       false,
