@@ -10,6 +10,10 @@ export type ScrollViewportOptions = {
   followBottom?: boolean;
 };
 
+type ContentReplacement = {
+  offsetDelta?: number;
+};
+
 /** A feature-owned scroll position over replaceable rendered content. */
 export class ScrollViewport implements Component {
   #content: Component;
@@ -32,8 +36,11 @@ export class ScrollViewport implements Component {
     return this.#offset >= this.#maximumOffset();
   }
 
-  setContent(content: Component): void {
+  setContent(content: Component, replacement: ContentReplacement = {}): void {
     this.#content = content;
+    if (!this.#followingBottom) {
+      this.#offset += replacement.offsetDelta ?? 0;
+    }
     this.#clamp();
   }
 

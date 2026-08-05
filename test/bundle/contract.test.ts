@@ -582,8 +582,12 @@ describe("Pipkin bundle", () => {
     const names = definitions.map((definition) => definition.name).sort();
 
     expect(names).toEqual([...Object.keys(expectedTools), "bash"].sort());
-    expect(PUBLIC_TOOL_CATALOGUE.map((entry) => entry.name).sort()).toEqual(
-      names.filter((name) => name !== "bash"),
+    const catalogueNames = PUBLIC_TOOL_CATALOGUE.map(
+      (entry) => entry.name,
+    ).sort();
+    const rendererExemptions = new Set(["bash"]);
+    expect(catalogueNames).toEqual(
+      names.filter((name) => !rendererExemptions.has(name)),
     );
     expect(PUBLIC_TOOL_EXCEPTIONS).toMatchObject({
       bash: expect.stringContaining("native Bash"),
@@ -596,7 +600,7 @@ describe("Pipkin bundle", () => {
 
     const nativeBash = createBashToolDefinition(ROOT);
     for (const definition of definitions) {
-      if (definition.name === "bash") {
+      if (rendererExemptions.has(definition.name)) {
         expect(definition).toMatchObject({
           name: nativeBash.name,
           label: nativeBash.label,
@@ -605,18 +609,20 @@ describe("Pipkin bundle", () => {
           promptSnippet: nativeBash.promptSnippet,
           promptGuidelines: nativeBash.promptGuidelines,
         });
-      } else {
-        expect(
-          definition.description?.trim(),
-          `${definition.name} description`,
-        ).not.toBe("");
-        expect(
-          undocumentedSchemaProperties(definition.parameters),
-          `${definition.name} schema`,
-        ).toEqual([]);
-        expect(definition.promptSnippet).toBeUndefined();
-        expect(definition.promptGuidelines).toBeUndefined();
+        continue;
       }
+      expect(catalogueNames).toContain(definition.name);
+      expect(definition.renderResult).toBeTypeOf("function");
+      expect(
+        definition.description?.trim(),
+        `${definition.name} description`,
+      ).not.toBe("");
+      expect(
+        undocumentedSchemaProperties(definition.parameters),
+        `${definition.name} schema`,
+      ).toEqual([]);
+      expect(definition.promptSnippet).toBeUndefined();
+      expect(definition.promptGuidelines).toBeUndefined();
     }
     expect(errors).toEqual([]);
     await runner.emit({ type: "session_shutdown", reason: "quit" });

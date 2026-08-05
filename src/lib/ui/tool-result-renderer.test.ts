@@ -10,6 +10,12 @@ describe("toolResultRenderer", () => {
   it("keeps multi-line semantic summaries compact and every text block ordered when expanded", () => {
     const render = toolResultRenderer({
       summary: () => ["Completed query.", "Two providers responded."],
+      expandedDetails: () => [
+        "metadata one",
+        "metadata two",
+        "metadata three",
+        "metadata four",
+      ],
     });
     const result = {
       content: [
@@ -44,7 +50,7 @@ describe("toolResultRenderer", () => {
         .map((line) => line.trimEnd())
         .join("\n"),
     ).toBe(
-      "Completed query.\nTwo providers responded.\nfirst complete block\nsecond complete block",
+      "Completed query.\nTwo providers responded.\nmetadata one\nmetadata two\nmetadata three\nmetadata four\nfirst complete block\nsecond complete block",
     );
   });
 

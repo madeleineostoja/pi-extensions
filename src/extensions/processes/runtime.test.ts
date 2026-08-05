@@ -308,6 +308,20 @@ describe("ProcessRuntime", () => {
     ).resolves.toMatchObject({ waitOutcome: "terminal" });
   });
 
+  it("keeps the full retained output available to the live inspector", async () => {
+    const fixture = runtime({ output: [] });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    for (let line = 1; line <= 81; line += 1) {
+      fixture.controls[0].write("stdout", Buffer.from(`line ${line}\n`));
+    }
+
+    const inspection = await fixture.runtime.inspectionOutput(snapshot.id);
+    expect(inspection.output).toContain("[stdout] line 1");
+    expect(inspection.output).toContain("[stdout] line 81");
+    expect(inspection.output).not.toContain("omitted by tail selection");
+  });
+
   it("keeps the newest contiguous tail and source-relative find line numbers", async () => {
     const fixture = runtime({ output: [] });
     bindings.push(fixture.binding);

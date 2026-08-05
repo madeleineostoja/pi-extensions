@@ -45,7 +45,9 @@ Use foreground Bash when completion is immediately required. Use managed process
 | `stop_process`       | Stop a process and return final output or a recallable outcome |
 | `/processes`         | Human live inspection and confirmed stop controls              |
 
-`untilContains` waits eventfully for one case-sensitive literal on either stream; timeout ends only the wait. Use bounded tail or `find` inspection when output changes the next decision. Use `resultMode: "outcome"` when status is enough, then recall that point-in-time result if needed. A later output-mode request is required for newer output. Do not poll.
+`untilContains` waits eventfully for one case-sensitive literal on either stream; timeout ends only the wait. Results state process status, wait outcome, and output selection in prose before the complete bounded selected output. Their `details` retain bounded normalized snapshots and selectors; `resultMode: "outcome"` retains that same point-in-time result for `context_recall`. A later output-mode request is required for newer output. Do not poll.
+
+`/processes` groups Running and Settled work, shows command, working directory, PID, settlement, and exceptional output-integrity information on a process landing page, and provides live merged output. Output follows the bottom until you scroll upward; returning to the bottom resumes following new output.
 
 Commands must remain foreground and non-interactive. Stop work that is no longer needed.
 

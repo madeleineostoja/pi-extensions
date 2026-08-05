@@ -1,7 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { retainResult } from "#context/retained-result";
-import { ProcessRuntime } from "./runtime.js";
+import { retainResult, decodeRetainedResult } from "#context/retained-result";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  ProcessRuntime,
+  type ProcessProjection,
+  type ProcessSnapshot,
+} from "./runtime.js";
 
 const ResultModeValues = [Type.Literal("output"), Type.Literal("outcome")];
 const ProcessResultMode = Type.Union(ResultModeValues, {
@@ -75,9 +80,6 @@ const StopParams = Type.Object(
   { additionalProperties: false },
 );
 
-const MAX_RESULT_BYTES = 24 * 1024;
-const MAX_RESULT_LINES = 200;
-
 function truncateUtf8(text: string, maxBytes: number): string {
   let bytes = 0;
   let result = "";
@@ -92,77 +94,115 @@ function truncateUtf8(text: string, maxBytes: number): string {
   return result;
 }
 
-function boundedText(text: string): string {
-  const lines = text.split("\n");
-  const selected: string[] = [];
-  let bytes = 0;
-  let truncated = false;
-  for (const line of lines) {
-    const safeLine = truncateUtf8(line, 4_096);
-    const lineBytes = Buffer.byteLength(safeLine) + (selected.length ? 1 : 0);
-    if (
-      selected.length >= MAX_RESULT_LINES - 1 ||
-      bytes + lineBytes > MAX_RESULT_BYTES - 40
-    ) {
-      truncated = true;
-      break;
-    }
-    selected.push(safeLine);
-    bytes += lineBytes;
-  }
-  return truncated
-    ? [...selected, "Process result truncated."].join("\n")
-    : selected.join("\n");
+function snapshotForResult(snapshot: ProcessSnapshot): ProcessSnapshot {
+  return {
+    ...snapshot,
+    command: truncateUtf8(snapshot.command, 2_048),
+    cwd: truncateUtf8(snapshot.cwd, 2_048),
+  };
 }
 
-function snapshotForResult(
-  snapshot: Record<string, unknown>,
-): Record<string, unknown> {
-  const visible = { ...snapshot };
-  for (const key of ["command", "cwd"]) {
-    if (typeof visible[key] === "string") {
-      visible[key] = truncateUtf8(visible[key], 2_048);
-    }
-  }
-  return visible;
-}
+type OrdinaryResult = {
+  content: [{ type: "text"; text: string }];
+  details: {
+    snapshot: ProcessSnapshot;
+    waitOutcome?: string;
+    selector?: ProcessProjection["selector"] & { find?: string };
+    resultMode: "output" | "outcome";
+  };
+};
 
 function ordinaryResult(result: {
-  snapshot: Record<string, unknown>;
+  snapshot: ProcessSnapshot;
   output: string;
   waitOutcome?: string;
-  selector?: unknown;
+  selector?: ProcessProjection["selector"];
+  find?: string;
   resultMode?: "output" | "outcome";
-}): {
-  content: [{ type: "text"; text: string }];
-  details: Record<string, unknown>;
-} {
+  started?: boolean;
+}): OrdinaryResult {
   const snapshot = snapshotForResult(result.snapshot);
-  const details = {
-    snapshot,
-    ...(result.waitOutcome === undefined
-      ? {}
-      : { waitOutcome: result.waitOutcome }),
-    ...(result.selector === undefined ? {} : { selector: result.selector }),
-    resultMode: result.resultMode ?? "output",
-  };
-  const text = boundedText(
-    [
+  const selector =
+    result.selector === undefined
+      ? undefined
+      : {
+          ...result.selector,
+          ...(result.find === undefined ? {} : { find: result.find.trim() }),
+        };
+  return {
+    content: [
+      {
+        type: "text",
+        text: [
+          result.started
+            ? `Started managed process ${snapshot.id}${snapshot.pid > 0 ? ` (pid ${snapshot.pid})` : ""}.`
+            : processStatus(snapshot),
+          ...(result.waitOutcome === undefined
+            ? []
+            : [waitStatus(result.waitOutcome, snapshot.status)]),
+          ...(selector === undefined ? [] : [selectorStatus(selector)]),
+          ...(result.selector === undefined ? [] : ["Output:", result.output]),
+        ].join("\n\n"),
+      },
+    ],
+    details: {
+      snapshot,
       ...(result.waitOutcome === undefined
-        ? []
-        : [`Wait: ${result.waitOutcome}`]),
-      JSON.stringify(snapshot, null, 2),
-      ...(result.output ? ["Output:", result.output] : []),
-    ].join("\n"),
+        ? {}
+        : { waitOutcome: result.waitOutcome }),
+      ...(selector === undefined ? {} : { selector }),
+      resultMode: result.resultMode ?? "output",
+    },
+  };
+}
+
+function processStatus(snapshot: ProcessSnapshot): string {
+  const settlement =
+    snapshot.status === "running"
+      ? "is running"
+      : snapshot.status === "completed"
+        ? "completed"
+        : snapshot.status === "failed"
+          ? "failed"
+          : "was stopped";
+  return `Managed process ${snapshot.id} ${settlement}.`;
+}
+
+function waitStatus(
+  outcome: string,
+  status: ProcessSnapshot["status"],
+): string {
+  return (
+    {
+      snapshot: "Captured a current process snapshot.",
+      ready: "The requested readiness literal was observed.",
+      terminal: "The process reached terminal settlement.",
+      timed_out:
+        status === "running"
+          ? "The wait timed out; the process is still running."
+          : "The wait timed out as the process settled.",
+      cancelled: "The wait was cancelled.",
+    }[outcome] ?? `Wait outcome: ${outcome}.`
   );
-  return { content: [{ type: "text", text }], details };
+}
+
+function selectorStatus(
+  selector: ProcessProjection["selector"] & { find?: string },
+): string {
+  if (selector.type === "tail") {
+    return `Showing the newest ${selector.requestedLines ?? "retained"} output lines from ${selector.sourceLines} retained source lines.`;
+  }
+  if (selector.totalMatches === 0) {
+    return `No retained output matched ${JSON.stringify(selector.find ?? "the requested literal")}.`;
+  }
+  return `Showing ${selector.selectedMatchAnchors ?? 0} selected matches from ${selector.totalMatches ?? 0} retained output matches${selector.find === undefined ? "" : ` for ${JSON.stringify(selector.find)}`}.`;
 }
 
 function outcomeSummary(result: {
-  snapshot: { id?: unknown; status?: unknown };
+  snapshot: ProcessSnapshot;
   waitOutcome?: string;
 }): string {
-  return `Managed process ${String(result.snapshot.id ?? "unknown")} is ${String(result.snapshot.status ?? "unknown")}${result.waitOutcome ? ` (${result.waitOutcome})` : ""}.`;
+  return `${processStatus(result.snapshot)}${result.waitOutcome ? ` ${waitStatus(result.waitOutcome, result.snapshot.status)}` : ""}`;
 }
 
 function validateOutcomeSelection(
@@ -175,6 +215,97 @@ function validateOutcomeSelection(
       "get_process_result: tailLines and find require resultMode:output",
     );
   }
+}
+
+type ProcessResultDetails = {
+  snapshot: ProcessSnapshot;
+  waitOutcome?: string;
+  selector?: ProcessProjection["selector"] & { find?: string };
+};
+
+function processResultDetails(
+  value: unknown,
+): ProcessResultDetails | undefined {
+  const direct = detailsFrom(value);
+  const retained = detailsFrom(decodeRetainedResult(value)?.details);
+  const details = isProcessSnapshot(direct?.snapshot) ? direct : retained;
+  if (!details || !isProcessSnapshot(details.snapshot)) {
+    return undefined;
+  }
+  return {
+    snapshot: details.snapshot,
+    ...(typeof details.waitOutcome === "string"
+      ? { waitOutcome: details.waitOutcome }
+      : {}),
+    ...(isRecord(details.selector)
+      ? {
+          selector: details.selector as ProcessProjection["selector"] & {
+            find?: string;
+          },
+        }
+      : {}),
+  };
+}
+
+function detailsFrom(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function isProcessSnapshot(value: unknown): value is ProcessSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    (value.status === "running" ||
+      value.status === "completed" ||
+      value.status === "failed" ||
+      value.status === "stopped")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export const renderProcessResult = toolResultRenderer({
+  summary(result) {
+    const details = processResultDetails(result.details);
+    return details
+      ? [
+          processStatus(details.snapshot),
+          ...(details.waitOutcome === undefined
+            ? []
+            : [waitStatus(details.waitOutcome, details.snapshot.status)]),
+          ...(details.selector === undefined
+            ? []
+            : [selectorStatus(details.selector)]),
+        ]
+      : firstLine(result.content);
+  },
+  partial() {
+    return "Managing process…";
+  },
+  error(result) {
+    return firstLine(result.content) || "Managed process operation failed.";
+  },
+  expandedContent(result) {
+    return decodeRetainedResult(result.details)?.content ?? result.content;
+  },
+});
+
+function firstLine(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "Managed process operation completed.";
+  }
+  const block = content.find(
+    (item): item is { type: "text"; text: string } =>
+      typeof item === "object" &&
+      item !== null &&
+      (item as { type?: unknown }).type === "text" &&
+      typeof (item as { text?: unknown }).text === "string",
+  );
+  return (
+    block?.text.split("\n", 1)[0] ?? "Managed process operation completed."
+  );
 }
 
 export function registerProcessTools(
@@ -195,9 +326,9 @@ export function registerProcessTools(
         signal,
         toolCallId,
       });
-      const result = ordinaryResult({ snapshot, output: "" });
-      return { content: result.content, details: snapshot };
+      return ordinaryResult({ snapshot, output: "", started: true });
     },
+    renderResult: renderProcessResult,
   });
   pi.registerTool({
     name: "get_process_result",
@@ -216,14 +347,19 @@ export function registerProcessTools(
         params.untilContains,
         { tailLines: params.tailLines, find: params.find },
       );
-      const ordinary = ordinaryResult({ ...result, resultMode: mode });
+      const ordinary = ordinaryResult({
+        ...result,
+        find: params.find,
+        resultMode: mode,
+      });
       if (mode === "output" || result.snapshot.status === "failed") {
-        return { content: ordinary.content, details: ordinary.details };
+        return ordinary;
       }
       return retainResult(ordinary, outcomeSummary(result), toolCallId, {
         label: "managed process",
       });
     },
+    renderResult: renderProcessResult,
   });
   pi.registerTool({
     name: "stop_process",
@@ -236,11 +372,12 @@ export function registerProcessTools(
       const result = await runtime().stop(params.id);
       const ordinary = ordinaryResult({ ...result, resultMode: mode });
       if (mode === "output" || result.snapshot.status === "failed") {
-        return { content: ordinary.content, details: ordinary.details };
+        return ordinary;
       }
       return retainResult(ordinary, outcomeSummary(result), toolCallId, {
         label: "managed process",
       });
     },
+    renderResult: renderProcessResult,
   });
 }

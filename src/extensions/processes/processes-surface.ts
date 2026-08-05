@@ -4,21 +4,27 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
-  SelectList,
+  truncateToWidth,
   type Component,
   type TUI,
-  truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { Panel } from "#lib/ui/panel";
 import { formatDuration } from "#lib/ui/metrics";
+import { Panel } from "#lib/ui/panel";
+import { ScrollViewport } from "#lib/ui/scroll-viewport";
+import {
+  WideSelectList,
+  type WideListEntry,
+  type WideListItem,
+} from "#lib/ui/wide-select-list";
 import type { ProcessSnapshot, ProcessRuntime } from "./runtime.js";
 
-type Action = "stop" | "back";
+type Action = "output" | "stop" | "back";
 type Entry = {
   id: string;
   snapshot: ProcessSnapshot;
-  section: "running" | "stopped";
+  section: "running" | "settled";
 };
+type Mode = "roster" | "landing" | "output";
 
 export async function showProcessesSurface(
   runtime: ProcessRuntime,
@@ -31,16 +37,22 @@ export async function showProcessesSurface(
 }
 
 export class ProcessesSurface implements Component {
-  #mode: "roster" | "inspector" = "roster";
+  #mode: Mode = "roster";
   #selectedId: string | undefined;
-  #roster: SelectList;
+  #roster: WideSelectList<Entry>;
   #rosterEntries: Entry[] = [];
   #rosterPosition = 0;
-  #actions: SelectList | undefined;
+  #actions: WideSelectList<Action> | undefined;
   #actionValues: Action[] = [];
-  #contentOffset = 0;
-  #focus: "actions" | "content" = "actions";
-  #output = "Loading recent output…";
+  #outputScroll: ScrollViewport | undefined;
+  #output:
+    | {
+        id: string;
+        content: string;
+        firstRetainedLine: number;
+        prefixLines: number;
+      }
+    | undefined;
   #outputRevision = 0;
   #renderQueued = false;
   #disposed = false;
@@ -55,8 +67,7 @@ export class ProcessesSurface implements Component {
     private readonly theme: Theme,
     private readonly done: () => void,
   ) {
-    this.#roster = new SelectList([], 12, selectTheme(theme));
-    this.#replaceRoster(undefined, 0);
+    this.#roster = this.#replaceRoster(undefined, 0);
     this.#unsubscribe = runtime.subscribe(() => this.#scheduleRefresh());
   }
 
@@ -67,136 +78,117 @@ export class ProcessesSurface implements Component {
   invalidate(): void {
     this.#roster.invalidate();
     this.#actions?.invalidate();
+    this.#outputScroll?.invalidate();
   }
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "q")) {
-      if (this.#mode === "inspector") {
+      if (this.#mode === "output") {
+        this.#mode = "landing";
+        this.#outputScroll = undefined;
+        this.tui.requestRender();
+      } else if (this.#mode === "landing") {
         this.#back();
       } else {
         this.#close();
       }
       return;
     }
-    if (this.#mode === "inspector" && matchesKey(data, "tab")) {
-      this.#focus = this.#focus === "actions" ? "content" : "actions";
-      this.tui.requestRender();
-      return;
-    }
-    if (this.#mode === "inspector" && this.#focus === "content") {
-      if (matchesKey(data, "down") || matchesKey(data, "j")) {
-        this.#contentOffset += 1;
-      } else if (matchesKey(data, "up") || matchesKey(data, "k")) {
-        this.#contentOffset = Math.max(0, this.#contentOffset - 1);
-      } else {
-        return;
-      }
+    if (this.#mode === "output") {
+      this.#outputScroll?.handleInput(data, { homeEnd: true });
       this.tui.requestRender();
       return;
     }
     (this.#mode === "roster" ? this.#roster : this.#actions)?.handleInput(data);
+    this.tui.requestRender();
   }
 
   render(width: number): string[] {
-    if (this.#mode === "inspector" && !this.#selectedSnapshot()) {
+    if (this.#mode !== "roster" && !this.#selectedSnapshot()) {
       this.#loseSelection();
     }
-    return new Panel({
-      theme: this.theme,
-      title: this.#mode === "roster" ? "Processes" : "Process inspector",
-      subtitle:
-        this.#mode === "roster"
-          ? "Running and stopped current-session processes"
-          : this.#focus === "actions"
-            ? "Actions focused · Tab: output"
-            : "Output focused · Tab: actions · ↑↓: scroll",
-      footer:
-        this.#mode === "roster"
-          ? "Enter: inspect · Esc: close"
-          : "Enter: action · Esc: back",
-      child:
-        this.#mode === "roster" ? this.#rosterComponent() : this.#inspector(),
-    }).render(width);
+    const options =
+      this.#mode === "roster"
+        ? { title: "Processes", child: this.#roster as Component }
+        : this.#mode === "landing"
+          ? { title: "Process", child: this.#landingComponent() }
+          : { title: "Process output", child: this.#outputComponent() };
+    return new Panel({ theme: this.theme, ...options }).render(width);
   }
 
   #entries(): Entry[] {
     const running: Entry[] = [];
-    const stopped: Entry[] = [];
+    const settled: Entry[] = [];
     for (const snapshot of this.runtime.snapshots()) {
       const entry: Entry = {
         id: snapshot.id,
         snapshot,
-        section: snapshot.status === "running" ? "running" : "stopped",
+        section: snapshot.status === "running" ? "running" : "settled",
       };
-      (entry.section === "running" ? running : stopped).push(entry);
+      (entry.section === "running" ? running : settled).push(entry);
     }
-    return [...running, ...stopped];
-  }
-
-  #rosterComponent(): Component {
-    if (this.#rosterEntries.length === 0) {
-      return textComponent(["No current-session managed processes."]);
-    }
-    if (this.#rosterEntries.some((entry) => entry.section === "running")) {
-      return this.#roster;
-    }
-    return {
-      render: (width) => [
-        "No running managed processes.",
-        ...this.#roster.render(width),
-      ],
-      invalidate: () => this.#roster.invalidate(),
-    };
+    return [...running, ...settled];
   }
 
   #replaceRoster(
     preferredId: string | undefined,
     preferredIndex: number,
-  ): void {
+  ): WideSelectList<Entry> {
     const entries = this.#entries();
     this.#rosterEntries = entries;
-    this.#roster = new SelectList(
-      entries.map((entry, index) => ({
-        value: entry.id,
-        label: `${sectionPrefix(entries, index)}${glyph(entry.snapshot.status)} ${bounded(entry.snapshot.description, 120)}`,
-        description: rosterMetrics(entry.snapshot),
-      })),
-      12,
-      selectTheme(this.theme),
-    );
-    this.#roster.onSelect = (item) => {
-      const index = this.#rosterEntries.findIndex(
-        (entry) => entry.id === item.value,
-      );
-      const entry = this.#rosterEntries[index];
-      if (entry) {
-        this.#open(entry, index);
+    const grouped: WideListEntry<Entry>[] = [];
+    for (const entry of entries) {
+      if (
+        grouped.at(-1)?.kind !== "section" &&
+        (grouped.length === 0 ||
+          (grouped.at(-1) as WideListItem<Entry>).data.section !==
+            entry.section)
+      ) {
+        grouped.push({
+          kind: "section",
+          label: entry.section === "running" ? "Running" : "Settled",
+          style: (text) => this.theme.fg("muted", text),
+        });
       }
-    };
-    if (entries.length > 0) {
-      const index = entries.findIndex((entry) => entry.id === preferredId);
-      const selected =
-        index >= 0
-          ? index
-          : Math.min(Math.max(0, preferredIndex), entries.length - 1);
-      this.#roster.setSelectedIndex(selected);
-      this.#rosterPosition = selected;
-    } else {
-      this.#rosterPosition = 0;
+      grouped.push(rosterItem(entry, this.theme));
     }
+    const list = new WideSelectList({
+      entries: grouped,
+      maxVisible: 12,
+      selectedPrefix: (text) => this.theme.fg("accent", text),
+      onSelect: (item) => {
+        const index = this.#rosterEntries.findIndex(
+          (entry) => entry.id === item.value,
+        );
+        if (index >= 0) {
+          this.#open(item.data, index);
+        }
+      },
+    });
+    const fallback =
+      entries[
+        Math.min(Math.max(0, preferredIndex), Math.max(0, entries.length - 1))
+      ]?.id;
+    list.setSelectedValue(
+      entries.some((entry) => entry.id === preferredId)
+        ? preferredId
+        : fallback,
+      preferredIndex,
+    );
+    this.#rosterPosition = Math.max(0, preferredIndex);
+    return list;
   }
 
   #open(entry: Entry, rosterPosition: number): void {
+    this.#outputRevision += 1;
+    this.#output = undefined;
+    this.#outputScroll = undefined;
     this.#selectedId = entry.id;
     this.#rosterPosition = rosterPosition;
     this.#lastLost = undefined;
-    this.#mode = "inspector";
-    this.#contentOffset = 0;
-    this.#focus = "actions";
-    this.#output = "Loading recent output…";
+    this.#mode = "landing";
     this.#bindSelectedRecord(entry.id);
     this.#makeActions(entry.snapshot);
-    this.#loadOutput(entry.id);
     this.tui.requestRender();
   }
 
@@ -220,61 +212,63 @@ export class ProcessesSurface implements Component {
 
   #makeActions(snapshot: ProcessSnapshot): void {
     const values: Action[] = [
+      "output",
       ...(snapshot.status === "running" ? (["stop"] as const) : []),
       "back",
     ];
-    if (values.join("|") === this.#actionValues.join("|")) {
+    if (this.#actions && values.join("|") === this.#actionValues.join("|")) {
       return;
     }
     const selected = this.#actions?.getSelectedItem()?.value as
       | Action
       | undefined;
     this.#actionValues = values;
-    this.#actions = new SelectList(
-      values.map((value) => ({
+    this.#actions = new WideSelectList({
+      entries: values.map((value) => ({
+        kind: "item" as const,
         value,
-        label: value === "stop" ? "Stop" : "Back",
+        data: value,
+        elastic: actionLabel(value),
       })),
-      8,
-      selectTheme(this.theme),
-    );
-    this.#actions.onSelect = (item) => void this.#action(item.value as Action);
-    this.#actions.setSelectedIndex(
-      selected === undefined ? 0 : Math.max(0, values.indexOf(selected)),
-    );
+      maxVisible: 4,
+      selectedPrefix: (text) => this.theme.fg("accent", text),
+      onSelect: (item) => void this.#action(item.data),
+    });
+    this.#actions.setSelectedValue(selected, 0);
   }
 
-  #inspector(): Component {
+  #landingComponent(): Component {
     const snapshot = this.#selectedSnapshot();
     if (!snapshot) {
       return textComponent(["Selected process is no longer available."]);
     }
-    const content = textComponent(detailLines(snapshot, this.#output));
     return {
-      render: (width) => {
-        const sidebarWidth = Math.min(24, Math.max(10, Math.floor(width / 3)));
-        const contentWidth = Math.max(1, width - sidebarWidth - 3);
-        const actions = this.#actions?.render(sidebarWidth) ?? [];
-        const lines = content.render(contentWidth);
-        this.#contentOffset = Math.min(
-          this.#contentOffset,
-          Math.max(0, lines.length - 1),
-        );
-        const visible = lines.slice(
-          this.#contentOffset,
-          this.#contentOffset + 24,
-        );
-        return Array.from(
-          { length: Math.max(actions.length, visible.length) },
-          (_, index) =>
-            `${truncateToWidth(actions[index] ?? "", sidebarWidth, "…", false)}${this.#focus === "actions" ? " │ " : " · "}${truncateToWidth(visible[index] ?? "", contentWidth, "…", false)}`,
-        );
-      },
-      invalidate: () => {
-        this.#actions?.invalidate();
-        content.invalidate();
-      },
+      render: (width) => [
+        ...textComponent(landingLines(snapshot)).render(width),
+        "",
+        ...(this.#actions?.render(width) ?? []),
+      ],
+      invalidate: () => this.#actions?.invalidate(),
     };
+  }
+
+  #outputComponent(): Component {
+    if (!this.#outputScroll) {
+      const cached = this.#output;
+      const output =
+        cached !== undefined && cached.id === this.#selectedId
+          ? cached.content
+          : "Loading retained output…";
+      this.#outputScroll = new ScrollViewport({
+        content: textComponent(output.split("\n")),
+        viewportHeight: 24,
+        followBottom: true,
+      });
+      if (this.#selectedId) {
+        this.#loadOutput(this.#selectedId);
+      }
+    }
+    return this.#outputScroll;
   }
 
   #scheduleRefresh(): void {
@@ -302,7 +296,7 @@ export class ProcessesSurface implements Component {
       if (selected && !entries.some((entry) => entry.id === selected)) {
         this.#notifySelectionLoss(selected);
       }
-      this.#replaceRoster(selected, index);
+      this.#roster = this.#replaceRoster(selected, index);
     } else {
       const snapshot = this.#selectedSnapshot();
       if (!snapshot) {
@@ -310,7 +304,9 @@ export class ProcessesSurface implements Component {
         return;
       }
       this.#makeActions(snapshot);
-      this.#loadOutput(snapshot.id);
+      if (this.#mode === "output") {
+        this.#loadOutput(snapshot.id);
+      }
     }
     this.tui.requestRender();
   }
@@ -318,21 +314,48 @@ export class ProcessesSurface implements Component {
   #loadOutput(id: string): void {
     const revision = ++this.#outputRevision;
     void this.runtime
-      .result(id, false, undefined, undefined)
-      .then(({ output }) => {
+      .inspectionOutput(id)
+      .then(({ output, firstRetainedLine, prefixLines }) => {
         if (
           !this.#disposed &&
           revision === this.#outputRevision &&
           this.#selectedId === id &&
           this.#selectedSnapshot()?.id === id
         ) {
-          this.#output = output;
+          const previous = this.#output;
+          // Keep a manually viewed retained line fixed when output eviction
+          // replaces prefix lines, including its dropped-output notice.
+          const offsetDelta =
+            previous?.id === id
+              ? prefixLines -
+                previous.prefixLines -
+                (firstRetainedLine - previous.firstRetainedLine)
+              : 0;
+          this.#output = {
+            id,
+            content: output,
+            firstRetainedLine,
+            prefixLines,
+          };
+          this.#outputScroll?.setContent(textComponent(output.split("\n")), {
+            offsetDelta,
+          });
           this.tui.requestRender();
         }
       })
       .catch(() => {
-        if (!this.#disposed && revision === this.#outputRevision) {
-          this.#output = "Recent output is unavailable.";
+        if (
+          !this.#disposed &&
+          revision === this.#outputRevision &&
+          this.#selectedId === id
+        ) {
+          this.#output = {
+            id,
+            content: "Retained output is unavailable.",
+            firstRetainedLine: 0,
+            prefixLines: 0,
+          };
+          this.#outputScroll?.setContent(textComponent([this.#output.content]));
           this.tui.requestRender();
         }
       });
@@ -341,6 +364,16 @@ export class ProcessesSurface implements Component {
   async #action(action: Action): Promise<void> {
     if (action === "back") {
       this.#back();
+      return;
+    }
+    if (action === "output") {
+      if (!this.#selectedSnapshot()) {
+        this.#loseSelection();
+        return;
+      }
+      this.#mode = "output";
+      this.#outputScroll = undefined;
+      this.tui.requestRender();
       return;
     }
     const id = this.#selectedId;
@@ -395,9 +428,11 @@ export class ProcessesSurface implements Component {
     this.#unsubscribeRecord = undefined;
     this.#selectedId = undefined;
     this.#mode = "roster";
-    this.#contentOffset = 0;
+    this.#actions = undefined;
+    this.#outputScroll = undefined;
+    this.#output = undefined;
     this.#outputRevision += 1;
-    this.#replaceRoster(id, position);
+    this.#roster = this.#replaceRoster(id, position);
     this.tui.requestRender();
   }
 
@@ -413,9 +448,11 @@ export class ProcessesSurface implements Component {
     this.#unsubscribeRecord = undefined;
     this.#selectedId = undefined;
     this.#mode = "roster";
-    this.#contentOffset = 0;
+    this.#actions = undefined;
+    this.#outputScroll = undefined;
+    this.#output = undefined;
     this.#outputRevision += 1;
-    this.#replaceRoster(id, position);
+    this.#roster = this.#replaceRoster(id, position);
     this.tui.requestRender();
   }
 
@@ -432,46 +469,54 @@ export class ProcessesSurface implements Component {
   }
 }
 
-function sectionPrefix(entries: readonly Entry[], index: number): string {
-  const entry = entries[index];
-  if (!entry || (index > 0 && entries[index - 1]?.section === entry.section)) {
-    return "";
-  }
-  return entry.section === "running" ? "Running · " : "Stopped · ";
+function rosterItem(entry: Entry, theme: Theme): WideListItem<Entry> {
+  return {
+    kind: "item",
+    value: entry.id,
+    data: entry,
+    prefix: `${glyph(entry.snapshot.status)} `,
+    prefixWidth: 2,
+    elastic: bounded(entry.snapshot.description, 180),
+    right: duration(entry.snapshot),
+    elasticStyle: (text) => theme.fg("muted", text),
+    rightStyle: (text) => theme.fg("muted", text),
+  };
+}
+
+function landingLines(snapshot: ProcessSnapshot): string[] {
+  const settlement = [
+    `Settlement: ${snapshot.status}`,
+    ...(snapshot.exitCode === null ? [] : [`exit ${snapshot.exitCode}`]),
+    ...(snapshot.signal === null ? [] : [`signal ${snapshot.signal}`]),
+  ].join(" · ");
+  return [
+    bounded(snapshot.description, 240),
+    "",
+    [
+      snapshot.status,
+      duration(snapshot),
+      ...(snapshot.pid > 0 ? [`pid ${snapshot.pid}`] : []),
+    ].join(" · "),
+    bounded(snapshot.command, 2_048),
+    bounded(snapshot.cwd, 2_048),
+    settlement,
+    ...(snapshot.droppedBytes > 0
+      ? [`Older output dropped: ${snapshot.droppedBytes} bytes.`]
+      : []),
+    ...(!snapshot.outputComplete ? ["Final output may be incomplete."] : []),
+  ];
 }
 
 function glyph(status: ProcessSnapshot["status"]): string {
   return { running: "●", completed: "✓", failed: "×", stopped: "■" }[status];
 }
 
-function rosterMetrics(snapshot: ProcessSnapshot): string {
-  return [
-    snapshot.status,
-    duration(snapshot),
-    snapshot.pid > 0 ? `pid ${snapshot.pid}` : undefined,
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join(" · ");
-}
-
-function detailLines(snapshot: ProcessSnapshot, output: string): string[] {
-  return [
-    `${glyph(snapshot.status)} ${bounded(snapshot.description, 240)}`,
-    `Status: ${snapshot.status}`,
-    `Command: ${bounded(snapshot.command, 2_048)}`,
-    `Cwd: ${bounded(snapshot.cwd, 2_048)}`,
-    `PID: ${snapshot.pid || "unavailable"}`,
-    `Started: ${snapshot.startedAt}`,
-    ...(snapshot.endedAt === undefined ? [] : [`Ended: ${snapshot.endedAt}`]),
-    `Duration: ${duration(snapshot)}`,
-    `Exit: ${snapshot.exitCode ?? "none"}`,
-    `Signal: ${snapshot.signal ?? "none"}`,
-    `Output retained: ${snapshot.retainedBytes} bytes`,
-    `Output dropped: ${snapshot.droppedBytes} bytes`,
-    `Final output: ${snapshot.outputComplete ? "complete" : "may be incomplete"}`,
-    "Recent output:",
-    ...output.split("\n"),
-  ];
+function actionLabel(action: Action): string {
+  return {
+    output: "View output",
+    stop: "Stop process",
+    back: "Back",
+  }[action];
 }
 
 function duration(snapshot: ProcessSnapshot): string {
@@ -494,15 +539,5 @@ function textComponent(lines: readonly string[]): Component {
         truncateToWidth(line, Math.max(1, width), "…", false),
       ),
     invalidate() {},
-  };
-}
-
-function selectTheme(theme: Theme) {
-  return {
-    selectedPrefix: (text: string) => theme.fg("accent", text),
-    selectedText: (text: string) => theme.bold(text),
-    description: (text: string) => theme.fg("muted", text),
-    scrollInfo: (text: string) => theme.fg("muted", text),
-    noMatch: (text: string) => theme.fg("muted", text),
   };
 }

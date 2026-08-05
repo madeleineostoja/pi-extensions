@@ -62,6 +62,11 @@ export type ProcessProjection = Readonly<{
     outputTruncated: boolean;
   }>;
 }>;
+export type ProcessInspectionOutput = Readonly<{
+  output: string;
+  firstRetainedLine: number;
+  prefixLines: number;
+}>;
 
 type OutputPart = { stream: Stream; text: string; bytes: number };
 type RecordState = {
@@ -366,6 +371,10 @@ export class ProcessRuntime {
     }
     const projection = this.project(record, selection);
     return { snapshot: copy(record.snapshot), waitOutcome, ...projection };
+  }
+
+  async inspectionOutput(id: string): Promise<ProcessInspectionOutput> {
+    return this.inspectOutput(this.require(id));
   }
 
   async stop(
@@ -711,6 +720,35 @@ export class ProcessRuntime {
     return lines
       .sort((left, right) => left.order - right.order)
       .map(({ stream, text, number }) => ({ stream, text, number }));
+  }
+
+  private inspectOutput(record: ProcessRecord): ProcessInspectionOutput {
+    let pathological = false;
+    const lines = this.logicalLines(record).map(({ stream, text }) => {
+      const output = `[${stream}] ${sanitiseLine(text)}`;
+      const clipped = truncateUtf8(output, 4_096);
+      pathological ||= clipped !== output;
+      return clipped;
+    });
+    const prefix = [
+      ...(record.snapshot.droppedBytes > 0
+        ? [
+            `Older retained output dropped: ${record.snapshot.droppedBytes} bytes.`,
+          ]
+        : []),
+      ...(!record.snapshot.outputComplete
+        ? ["Final output may be incomplete."]
+        : []),
+      ...(pathological ? ["Pathological output line truncated."] : []),
+    ];
+    return {
+      output: [
+        ...prefix,
+        ...(lines.length === 0 ? ["No retained output observed."] : lines),
+      ].join("\n"),
+      firstRetainedLine: record.firstRetainedLine,
+      prefixLines: prefix.length,
+    };
   }
 
   private project(

@@ -68,11 +68,10 @@ export function toolResultRenderer(options: RendererOptions) {
         ),
       );
     }
-    const details = summaryLines(
+    for (const detail of expandedDetailLines(
       options.expandedDetails?.(result, renderContext),
-    );
-    if (details.length > 0) {
-      view.addChild(new Text(theme.fg("dim", details.join("\n")), 0, 0));
+    )) {
+      view.addChild(new Text(theme.fg("dim", detail), 0, 0));
     }
     for (const block of textBlocks(
       options.expandedContent?.(result, renderContext) ?? result.content,
@@ -117,13 +116,20 @@ export function compactDisplayText(
 }
 
 function summaryLines(summary: Summary): string[] {
-  if (summary === undefined) {
+  return displayLines(summary).slice(0, MAX_SUMMARY_LINES);
+}
+
+function expandedDetailLines(details: Summary): string[] {
+  return displayLines(details);
+}
+
+function displayLines(value: Summary): string[] {
+  if (value === undefined) {
     return [];
   }
-  return (typeof summary === "string" ? [summary] : [...summary])
+  return (typeof value === "string" ? [value] : [...value])
     .map((line) => compactDisplayText(line))
-    .filter(Boolean)
-    .slice(0, MAX_SUMMARY_LINES);
+    .filter(Boolean);
 }
 
 function textBlocks(content: unknown): TextBlock[] {
