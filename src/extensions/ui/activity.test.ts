@@ -10,7 +10,7 @@ import {
   validateActivityRecord,
 } from "./activity.js";
 import { ActivityStore } from "./activity-store.js";
-import { renderActivity } from "./activity-widget.js";
+import { installActivityWidget, renderActivity } from "./activity-widget.js";
 
 const record = (id: string, overrides = {}) => ({
   id,
@@ -232,6 +232,69 @@ describe("Activity", () => {
         record("x", { title: "😀".repeat(ACTIVITY_TEXT_BYTE_LIMIT) }),
       ),
     ).toBe(false);
+  });
+
+  it("keeps the activity background active after truncated text resets ANSI styles", () => {
+    const store = new ActivityStore();
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "upsert",
+      record: record("long", {
+        title: "a deliberately long activity title that must truncate",
+        metric: "12k context",
+      }),
+    });
+    let factory:
+      | ((tui: unknown, theme: unknown) => { render(width: number): string[] })
+      | undefined;
+    const dispose = installActivityWidget(
+      {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          setWidget: (
+            _key: string,
+            value:
+              | ((
+                  tui: unknown,
+                  theme: unknown,
+                ) => { render(width: number): string[] })
+              | undefined,
+          ) => {
+            factory = value;
+          },
+        },
+      } as never,
+      store,
+    );
+    const backgroundStart = "\x1b[48;5;17m";
+    const component = factory!(
+      { requestRender() {} },
+      {
+        fg: (_tone: string, text: string) => `\x1b[38;5;7m${text}\x1b[39m`,
+        bg: (_tone: string, text: string) =>
+          `${backgroundStart}${text}\x1b[49m`,
+      },
+    );
+
+    const rendered = component.render(32).join("\n");
+    expect(rendered).toContain(`\x1b[0m${backgroundStart}…`);
+    const reset = "\x1b[0m";
+    for (const suffix of rendered.split(reset).slice(1)) {
+      expect(suffix.startsWith(backgroundStart)).toBe(true);
+    }
+    expect(
+      component.render(32).every((line) => visibleWidth(line) === 32),
+    ).toBe(true);
+    dispose();
   });
 
   it("keeps hierarchy, details, overflow, and ANSI-safe width bounded", () => {

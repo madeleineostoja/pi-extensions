@@ -149,10 +149,10 @@ describe("AgentsSurface roster and landing", () => {
       rendered(fixture([new FakeRuntime("runtime", [])]).surface),
     );
 
-    expect(text).toContain("No active or retained agents.");
+    expect(text).toContain("No agents.");
   });
 
-  it("renders headerless groups with aligned nested rows, right durations, and no hidden Implement workers", () => {
+  it("renders one compact status-driven hierarchy with right durations and no hidden Implement workers", () => {
     const runtime = new FakeRuntime("runtime", [
       snapshot({ id: "parent", key: "runtime:parent", description: "parent" }),
       snapshot({
@@ -178,15 +178,19 @@ describe("AgentsSurface roster and landing", () => {
     ]);
     const text = plain(rendered(fixture([runtime]).surface, 100));
 
-    expect(text).toContain("Active");
-    expect(text).toContain("Retained");
-    expect(text).not.toContain("Active ·");
+    expect(text).not.toMatch(/^\s*(Active|Retained)$/m);
     expect(text).not.toContain("hidden worker");
-    const parent = text.split("\n").find((line) => line.includes("parent"))!;
-    const child = text.split("\n").find((line) => line.includes("child"))!;
-    expect(parent.indexOf("Explore")).toBe(child.indexOf("Explore"));
-    expect(parent).toMatch(/\d/);
-    expect(child).toMatch(/\d/);
+    const lines = text.split("\n");
+    const parentIndex = lines.findIndex((line) => line.includes("parent"));
+    const childIndex = lines.findIndex((line) => line.includes("child"));
+    const retainedIndex = lines.findIndex((line) => line.includes("retained"));
+    expect(lines[parentIndex]).toMatch(/› ● Explore\s+parent/);
+    expect(lines[childIndex]).toMatch(/└ ● Explore\s+child/);
+    expect(lines[retainedIndex]).toMatch(/✓ Explore\s+retained/);
+    expect(parentIndex).toBeLessThan(childIndex);
+    expect(childIndex).toBeLessThan(retainedIndex);
+    expect(lines[parentIndex]).toMatch(/\d/);
+    expect(lines[childIndex]).toMatch(/\d/);
   });
 
   it("keeps a stable roster selection and falls back safely when the selected record disappears", () => {

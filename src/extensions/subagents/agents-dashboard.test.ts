@@ -22,7 +22,7 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
 }
 
 describe("/agents non-TUI projection", () => {
-  it("uses one bounded active/retained projection with typed Implement roles", () => {
+  it("uses one bounded status-driven projection with typed Implement roles", () => {
     const runtime = {
       snapshots: () => [
         snapshot({
@@ -33,7 +33,27 @@ describe("/agents non-TUI projection", () => {
     } as unknown as SubagentRuntime;
 
     expect(staticAgentsProjection(runtime)).toBe(
-      "Active agents\n1. running · Implement: Reviewer · inspect a focused task\nRetained agents\n1. completed · Worker · inspect a focused task",
+      "● Implement: Reviewer · inspect a focused task\n✓ Worker · inspect a focused task",
     );
+  });
+
+  it("keeps live agents visible ahead of bounded retained history", () => {
+    const runtime = {
+      snapshots: () => [
+        ...Array.from({ length: 24 }, (_, index) =>
+          snapshot({
+            id: `done-${index}`,
+            key: `done-${index}`,
+            status: "completed",
+            description: `retained ${index}`,
+          }),
+        ),
+        snapshot({ id: "live", key: "live", description: "live work" }),
+      ],
+    } as unknown as SubagentRuntime;
+
+    const projection = staticAgentsProjection(runtime);
+    expect(projection.split("\n")[0]).toBe("● Worker · live work");
+    expect(projection).not.toContain("retained 23");
   });
 });

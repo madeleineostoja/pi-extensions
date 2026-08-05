@@ -23,11 +23,7 @@ import {
 } from "#lib/ui/metrics";
 import { Panel } from "#lib/ui/panel";
 import { ScrollViewport } from "#lib/ui/scroll-viewport";
-import {
-  WideSelectList,
-  type WideListEntry,
-  type WideListItem,
-} from "#lib/ui/wide-select-list";
+import { WideSelectList, type WideListItem } from "#lib/ui/wide-select-list";
 import type { InspectionToolArguments } from "./inspection.js";
 import type {
   RuntimeInspection,
@@ -35,13 +31,11 @@ import type {
   SubagentRuntime,
 } from "./runtime.js";
 
-const terminal = new Set(["completed", "failed", "stopped"]);
 type Action = "activity" | "result" | "stop" | "back";
 type Selection = { runtime: SubagentRuntime; key: string; value: string };
 type Entry = Selection & {
   snapshot: RuntimeSnapshot;
   depth: number;
-  section: "active" | "retained";
 };
 type Mode = "roster" | "landing" | "activity" | "result";
 
@@ -199,7 +193,7 @@ export class AgentsSurface implements Component, Focusable {
   }
 
   #entries(): Entry[] {
-    const active: Entry[] = [];
+    const live: Entry[] = [];
     const retained: Entry[] = [];
     for (const [runtimeIndex, runtime] of this.runtimes.entries()) {
       const entries = runtime
@@ -211,7 +205,6 @@ export class AgentsSurface implements Component, Focusable {
           value: `${runtimeIndex}:${snapshotKey(runtime, snapshot)}`,
           snapshot,
           depth: 0,
-          section: "active" as const,
         }));
       const byId = new Map(entries.map((entry) => [entry.snapshot.id, entry]));
       const children = new Map<string, Entry[]>();
@@ -240,13 +233,8 @@ export class AgentsSurface implements Component, Focusable {
           }
         };
         add(root, 0);
-        const section: Entry["section"] = group.some(
-          (entry) => !terminal.has(entry.snapshot.status),
-        )
-          ? "active"
-          : "retained";
-        (section === "active" ? active : retained).push(
-          ...group.map((entry) => ({ ...entry, section })),
+        (group.some((entry) => isLive(entry.snapshot)) ? live : retained).push(
+          ...group,
         );
       };
       for (const root of roots) {
@@ -256,7 +244,7 @@ export class AgentsSurface implements Component, Focusable {
         addGroup(entry);
       }
     }
-    return [...active, ...retained];
+    return [...live, ...retained];
   }
 
   #replaceRoster(
@@ -265,37 +253,17 @@ export class AgentsSurface implements Component, Focusable {
   ): WideSelectList<Entry> {
     const entries = this.#entries();
     this.#rosterEntries = entries;
-    const grouped: WideListEntry<Entry>[] = [];
-    const prefixWidth = Math.max(
-      0,
-      ...entries.map((entry) => visibleWidth(rosterPrefix(entry))),
-    );
     const typeWidth = Math.max(
       0,
       ...entries.map((entry) => visibleWidth(displayType(entry.snapshot))),
     );
-    for (const entry of entries) {
-      if (
-        grouped.at(-1)?.kind !== "section" &&
-        (grouped.length === 0 ||
-          (grouped.at(-1) as WideListItem<Entry>).data.section !==
-            entry.section)
-      ) {
-        grouped.push({
-          kind: "section",
-          label: entry.section === "active" ? "Active" : "Retained",
-          style: (text) => this.theme.fg("muted", text),
-        });
-      }
-      grouped.push(rosterItem(entry, this.theme, prefixWidth, typeWidth));
-    }
     const list = new WideSelectList({
-      entries: grouped,
+      entries: entries.map((entry) => rosterItem(entry, this.theme, typeWidth)),
       maxVisible: 12,
       selectedPrefix: (text) => this.theme.fg("accent", text),
       keybindings: this.keybindings,
       empty: {
-        text: "No active or retained agents.",
+        text: "No agents.",
         style: (text) => this.theme.fg("muted", text),
       },
       onSelect: (item) => {
@@ -657,7 +625,6 @@ function rosterPrefix(entry: Entry): string {
 function rosterItem(
   entry: Entry,
   theme: Theme,
-  prefixWidth: number,
   typeWidth: number,
 ): WideListItem<Entry> {
   return {
@@ -665,7 +632,6 @@ function rosterItem(
     value: entry.value,
     data: entry,
     prefix: rosterPrefix(entry),
-    prefixWidth,
     fixed: [{ text: displayType(entry.snapshot), width: typeWidth }],
     elastic: bounded(entry.snapshot.description, 180),
     right: duration(entry.snapshot),
@@ -915,6 +881,10 @@ function nestedParent(snapshot: RuntimeSnapshot): string | undefined {
   return typeof snapshot.owner === "object" && snapshot.owner.kind === "nested"
     ? snapshot.owner.parentId
     : undefined;
+}
+
+function isLive(snapshot: RuntimeSnapshot): boolean {
+  return snapshot.status === "queued" || snapshot.status === "running";
 }
 
 function glyph(status: RuntimeSnapshot["status"]): string {

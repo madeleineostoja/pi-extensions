@@ -50,10 +50,14 @@ class ActivityWidget implements Component {
     }
     if (width < 3) {
       return renderActivity(records, Math.max(1, width), this.theme).map(
-        (line) => this.theme.bg("toolPendingBg", line),
+        (line) =>
+          activityBackground(
+            truncateToWidth(line, Math.max(1, width), "", true),
+            this.theme,
+          ),
       );
     }
-    const box = new Box(1, 1, (text) => this.theme.bg("toolPendingBg", text));
+    const box = new Box(1, 1, (text) => activityBackground(text, this.theme));
     box.addChild({
       render: (contentWidth) =>
         renderActivity(records, Math.max(1, contentWidth), this.theme),
@@ -89,6 +93,19 @@ export function installActivityWidget(
     components.clear();
     ctx.ui.setWidget(WIDGET_KEY, undefined);
   };
+}
+
+function activityBackground(text: string, theme: Theme): string {
+  const backgroundReset = "\x1b[49m";
+  const emptyBackground = theme.bg("toolPendingBg", "");
+  const backgroundStart = emptyBackground.endsWith(backgroundReset)
+    ? emptyBackground.slice(0, -backgroundReset.length)
+    : emptyBackground;
+  const reset = "\x1b[0m";
+  return theme.bg(
+    "toolPendingBg",
+    text.replaceAll(reset, `${reset}${backgroundStart}`),
+  );
 }
 
 export function renderActivity(

@@ -64,7 +64,7 @@ In the TUI, Escape during foreground work asks for confirmation before aborting 
 
 ## `/agents`
 
-The dashboard presents a scannable Active/Retained roster with hierarchy, current description, and elapsed time. Selecting an agent opens a landing page with status, elapsed time, available context and cost, and a bounded failure reason when relevant. From there you can view Activity, view a completed Result, stop running work with confirmation, or return to the roster.
+The dashboard presents one scannable roster with status glyphs, hierarchy, current description, and elapsed time. Live agent groups appear before retained history without separate section headings. Selecting an agent opens a landing page with status, elapsed time, available context and cost, and a bounded failure reason when relevant. From there you can view Activity, view a completed Result, stop running work with confirmation, or return to the roster.
 
 Activity is a full-width chronological timeline: assistant prose is rendered as Markdown; tool calls are compact summaries with bounded arguments and status; steering is quoted; and retry and compaction events remain visible. It never replays complete tool output. Steerable agents have an inline bordered guidance editor beneath the timeline: type normally, use Enter to send and Shift+Enter for a new line; arrows scroll the timeline. Escape returns to the landing page.
 

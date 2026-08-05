@@ -23,49 +23,35 @@ export function staticAgentsProjection(
         : [runtimeOrRuntimes],
     ),
   ];
-  const snapshots = runtimes.flatMap((runtime, runtimeIndex) =>
-    runtime
-      .snapshots({ includeNested: true })
-      .map((snapshot: RuntimeSnapshot) => ({
-        runtimeIndex,
-        snapshot,
-      })),
+  const snapshots: RuntimeSnapshot[] = runtimes.flatMap((runtime) =>
+    runtime.snapshots({ includeNested: true }),
   );
   if (snapshots.length === 0) {
     return "No current-session agents.";
   }
-  const active = snapshots.filter(
-    ({ snapshot }) =>
-      snapshot.status === "queued" || snapshot.status === "running",
-  );
-  const retained = snapshots.filter(
-    ({ snapshot }) =>
-      snapshot.status !== "queued" && snapshot.status !== "running",
-  );
-  return [
-    ...staticSection("Active agents", active),
-    ...staticSection("Retained agents", retained),
-  ]
+  return snapshots
+    .sort((left, right) => Number(isLive(right)) - Number(isLive(left)))
+    .slice(0, 24)
+    .map(
+      (snapshot) =>
+        `${glyph(snapshot.status)} ${displayType(snapshot)} · ${bounded(snapshot.description, 180)}`,
+    )
     .join("\n")
     .slice(0, 4096);
 }
 
-function staticSection(
-  heading: string,
-  entries: readonly { runtimeIndex: number; snapshot: RuntimeSnapshot }[],
-): string[] {
-  if (entries.length === 0) {
-    return [];
-  }
-  return [
-    heading,
-    ...entries
-      .slice(0, 24)
-      .map(
-        ({ runtimeIndex, snapshot }) =>
-          `${runtimeIndex + 1}. ${snapshot.status} · ${displayType(snapshot)} · ${bounded(snapshot.description, 180)}`,
-      ),
-  ];
+function isLive(snapshot: RuntimeSnapshot): boolean {
+  return snapshot.status === "queued" || snapshot.status === "running";
+}
+
+function glyph(status: RuntimeSnapshot["status"]): string {
+  return {
+    queued: "○",
+    running: "●",
+    completed: "✓",
+    failed: "×",
+    stopped: "■",
+  }[status];
 }
 
 function displayType(snapshot: RuntimeSnapshot): string {
