@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { ProcessesSurface } from "./processes-surface.js";
 import type { ProcessSnapshot } from "./runtime.js";
+
+beforeAll(() => initTheme("dark", false));
 
 function snapshot(
   id: string,
@@ -35,6 +38,21 @@ const theme = {
 } as never;
 
 describe("ProcessesSurface", () => {
+  it("shows an explicit empty roster", () => {
+    const surface = new ProcessesSurface(
+      {
+        snapshots: () => [],
+        subscribe: () => () => {},
+      } as never,
+      { ui: { notify: vi.fn() } } as never,
+      { requestRender: vi.fn() } as never,
+      theme,
+      vi.fn(),
+    );
+
+    expect(surface.render(100).join("\n")).toContain("No managed processes.");
+  });
+
   it("uses headerless Running and Settled wide-list groups with a diagnostics landing page", () => {
     const running = snapshot("process-1", "running");
     const completed = {

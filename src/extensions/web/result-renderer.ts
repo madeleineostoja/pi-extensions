@@ -3,20 +3,16 @@ import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 export const renderWebFetchResult = toolResultRenderer({
   summary(result) {
     const details = record(result.details);
-    const target = targetLabel(details?.finalUrl ?? details?.requestedUrl);
     const output = text(details?.output);
     const contentType = text(details?.contentType);
     const characters = details?.contentChars;
     return [
-      `Fetched ${target ?? "public target"}.`,
-      [
-        output,
-        contentType,
-        typeof characters === "number" ? `${characters} characters` : undefined,
-      ]
-        .filter((part): part is string => part !== undefined)
-        .join(" · "),
-    ].filter(Boolean);
+      output,
+      contentType,
+      typeof characters === "number" ? `${characters} characters` : undefined,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join(" · ");
   },
   partial(result) {
     const details = record(result.details);
@@ -35,12 +31,9 @@ export const renderBatchWebFetchResult = toolResultRenderer({
     const total = details?.total;
     const succeeded = details?.succeeded;
     const failed = details?.failed;
-    return [
-      "Batch web fetch.",
-      typeof total === "number" && typeof succeeded === "number"
-        ? `${succeeded} of ${total} targets fetched${typeof failed === "number" && failed > 0 ? ` · ${failed} failed` : ""}.`
-        : "",
-    ].filter(Boolean);
+    return typeof total === "number" && typeof succeeded === "number"
+      ? `${succeeded}/${total} fetched${typeof failed === "number" && failed > 0 ? ` · ${failed} failed` : ""}`
+      : undefined;
   },
   partial(result) {
     const details = record(result.details);
@@ -82,16 +75,4 @@ function firstText(content: unknown): string {
         typeof (block as { text?: unknown }).text === "string",
     )?.text ?? ""
   );
-}
-
-function targetLabel(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  try {
-    const url = new URL(value);
-    return `${url.host}${url.pathname === "/" ? "" : url.pathname}`;
-  } catch {
-    return value;
-  }
 }

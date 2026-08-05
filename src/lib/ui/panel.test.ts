@@ -26,7 +26,9 @@ describe("Panel", () => {
 
     const lines = panel.render(12);
 
-    expect(lines).toHaveLength(6);
+    expect(lines).toHaveLength(7);
+    expect(lines.at(-3)?.trim()).toBe("");
+    expect(lines.at(-2)?.trim()).toBe("footer");
     expect(lines[0]).toBe("─".repeat(12));
     expect(lines.at(-1)).toBe("─".repeat(12));
     expect(lines.join("\n")).not.toMatch(/[│╭╮╰╯]/u);

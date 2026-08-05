@@ -4,8 +4,10 @@ import {
   truncateHead,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { Type, type Static } from "typebox";
 import { inspectRunSnapshot, listCheckoutRuns } from "./controls.js";
 import { ExecGitClient } from "./git.js";
@@ -46,14 +48,11 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
       const checkoutRoot = await new ExecGitClient(ctx.cwd).root();
       return inspectImplementRun(checkoutRoot, input);
     },
-    renderCall(args, theme) {
-      const target = args.runId ? ` ${args.runId}` : " retained runs";
-      return new Text(
-        `${theme.fg("toolTitle", theme.bold("inspect_implement_run"))}${theme.fg("muted", target)}`,
-        0,
-        0,
-      );
-    },
+    renderCall: toolCallRenderer({
+      name: "inspect_implement_run",
+      detail: (args: InspectImplementRunInput) => args.runId ?? "retained runs",
+      pending: "Inspecting retained Implement state…",
+    }),
     renderResult: toolResultRenderer({
       summary(result) {
         const details = result.details as InspectionDetails | undefined;

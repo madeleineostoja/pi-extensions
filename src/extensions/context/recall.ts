@@ -7,8 +7,10 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
-import { Text } from "@earendil-works/pi-tui";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
 import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, hasRetainedResult } from "./retained-result.ts";
@@ -197,13 +199,18 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         ),
       };
     },
-    renderCall(args, theme) {
-      return new Text(
-        `${theme.fg("toolTitle", theme.bold("context_recall"))} ${theme.fg("accent", shortenedId(args.id))}`,
-        0,
-        0,
-      );
-    },
+    renderCall: toolCallRenderer({
+      name: "context_recall",
+      detail: (args) =>
+        [
+          shortenedId(args.id),
+          args.lines ? `lines ${args.lines}` : undefined,
+          args.find ? `find “${args.find}”` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      pending: "Recalling retained content…",
+    }),
     renderResult: toolResultRenderer({
       summary(result) {
         const details = renderDetails(result.details);

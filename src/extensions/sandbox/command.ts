@@ -268,6 +268,10 @@ class DenialPage implements Component {
         .map((denial) => denialItem(denial, this.options.state)),
       maxVisible: 10,
       selectedPrefix: (text) => this.options.theme.fg("accent", text),
+      empty: {
+        text: "No recent denials.",
+        style: (text) => this.options.theme.fg("muted", text),
+      },
       onSelect: (item) => {
         this.#selected = item.data;
       },

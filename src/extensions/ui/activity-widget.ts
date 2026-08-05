@@ -99,6 +99,14 @@ export function renderActivity(
 ): string[] {
   const contentWidth = Math.max(1, width);
   const lines: string[] = [];
+  const labelWidth = Math.min(
+    24,
+    Math.max(...records.map((record) => visibleWidth(record.label))),
+  );
+  const rightWidth = Math.max(
+    0,
+    ...records.map((record) => visibleWidth(rightFields(record, now))),
+  );
   let remaining = ACTIVITY_BODY_LINE_LIMIT;
   let renderedRecords = 0;
   for (const record of records) {
@@ -106,7 +114,17 @@ export function renderActivity(
       break;
     }
     const depth = depthFor(record, records);
-    lines.push(recordLine(record, depth, contentWidth, theme, now));
+    lines.push(
+      recordLine(
+        record,
+        depth,
+        contentWidth,
+        theme,
+        now,
+        labelWidth,
+        rightWidth,
+      ),
+    );
     remaining -= 1;
     renderedRecords += 1;
     if (record.detail && remaining > 0) {
@@ -166,6 +184,8 @@ function recordLine(
   width: number,
   theme: Theme,
   now: number,
+  labelWidth: number,
+  rightWidth: number,
 ): string {
   const indentation = depth ? `${"  ".repeat(depth - 1)}└ ` : "";
   const glyph = glyphFor(record.state);
@@ -176,10 +196,18 @@ function recordLine(
   const right = rightFields(record, now);
   const available = Math.max(
     0,
-    width - visibleWidth(prefix) - (right ? visibleWidth(right) + 1 : 0),
+    width - visibleWidth(prefix) - (right ? rightWidth + 1 : 0),
   );
-  const primary = primaryFields(record.label, record.title, available);
-  const shownRight = right && primary ? right : "";
+  const primary = primaryFields(
+    record.label,
+    record.title,
+    available,
+    labelWidth,
+  );
+  const shownRight =
+    right && primary
+      ? `${" ".repeat(rightWidth - visibleWidth(right))}${right}`
+      : "";
   return styleRecordLine(indentation, glyph, primary, shownRight, theme);
 }
 
@@ -199,21 +227,31 @@ function rightFields(record: StoredActivityRecord, now: number): string {
   return values.join(" · ");
 }
 
-function primaryFields(label: string, title: string, width: number): string {
+function primaryFields(
+  label: string,
+  title: string,
+  width: number,
+  preferredLabelWidth: number,
+): string {
   if (width <= 0) {
     return "";
   }
-  if (width < 5) {
+  const separator = " · ";
+  if (width <= visibleWidth(separator) + 1) {
     return truncateToWidth(title, width, "…", false);
   }
-  const separator = " · ";
   const available = width - visibleWidth(separator);
-  const labelWidth = Math.min(
-    visibleWidth(label),
-    Math.max(1, Math.floor(available / 2)),
-  );
+  const labelWidth = Math.min(preferredLabelWidth, Math.max(1, available - 1));
+  const shownLabel = truncateToWidth(label, labelWidth, "…", false);
+  const paddedLabel = `${shownLabel}${" ".repeat(
+    Math.max(0, labelWidth - visibleWidth(shownLabel)),
+  )}`;
   const titleWidth = Math.max(1, available - labelWidth);
-  return `${truncateToWidth(label, labelWidth, "…", false)}${separator}${truncateToWidth(title, titleWidth, "…", false)}`;
+  const shownTitle = truncateToWidth(title, titleWidth, "…", false);
+  const paddedTitle = `${shownTitle}${" ".repeat(
+    Math.max(0, titleWidth - visibleWidth(shownTitle)),
+  )}`;
+  return `${paddedLabel}${separator}${paddedTitle}`;
 }
 
 function styleRecordLine(

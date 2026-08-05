@@ -1,6 +1,9 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { loadContext7Auth, loadGithubAuth } from "./auth.js";
 import {
   LIMITS,
@@ -85,6 +88,11 @@ export function registerPackageSearch(
     description:
       "Discover separately ranked ecosystem documentation, public npm packages, and explicitly public GitHub repositories. Results are provider signals, not identity matching or recommendations.",
     parameters: PackageSearchParameters,
+    renderCall: toolCallRenderer({
+      name: "package_search",
+      detail: (args: PackageSearchInput) => args.query,
+      pending: "Searching package providers…",
+    }),
     async execute(_toolCallId, input: PackageSearchInput, signal) {
       return executePackageSearch(input, signal, { agentDir: agentDir() });
     },
@@ -99,10 +107,11 @@ export function registerPackageSearch(
           (group) => group.status === "ok",
         ).length;
         const failed = groups.length - succeeded;
-        return [
-          `Package discovery · ${details?.query ?? "query"}.`,
-          `${succeeded} provider${succeeded === 1 ? "" : "s"} responded${failed ? ` · ${failed} unavailable` : ""}.`,
-        ];
+        const resultCount = groups.reduce(
+          (total, group) => total + group.results.length,
+          0,
+        );
+        return `${succeeded} provider${succeeded === 1 ? "" : "s"} · ${resultCount} result${resultCount === 1 ? "" : "s"}${failed ? ` · ${failed} unavailable` : ""}`;
       },
       partial() {
         return "Searching package providers…";

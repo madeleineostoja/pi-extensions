@@ -79,7 +79,7 @@ describe("batch_web_fetch", () => {
       .map((line) => line.trimEnd())
       .join("\n");
 
-    expect(collapsed).toContain("1 of 2 targets fetched · 1 failed.");
+    expect(collapsed).toBe("1/2 fetched · 1 failed");
     expect(expanded.indexOf("Item 1")).toBeLessThan(expanded.indexOf("Item 2"));
     expect(expanded).toContain("Status: failed · timed out");
   });

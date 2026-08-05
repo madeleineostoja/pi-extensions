@@ -1,14 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  Theme,
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  initTheme,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { completeText } from "#lib/complete";
 import { registerBtwCommand } from "./command.js";
 
 const completeTextMock = vi.mocked(completeText);
+
+beforeAll(() => initTheme("dark", false));
 
 vi.mock("#lib/complete", async () => {
   const actual =

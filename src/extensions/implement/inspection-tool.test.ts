@@ -243,7 +243,7 @@ describe("inspect_implement_run", () => {
 
     expect(
       tool
-        .renderCall({ runId: "run-1" }, theme, {})
+        .renderCall({ runId: "run-1" }, theme, { isPartial: false })
         .render(200)
         .map((line: string) => line.trimEnd())
         .join("\n"),

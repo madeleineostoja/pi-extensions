@@ -51,7 +51,7 @@ describe("web_fetch", () => {
       .map((line) => line.trimEnd())
       .join("\n");
 
-    expect(collapsed).toContain("Fetched example.com/article.");
+    expect(collapsed).toBe("markdown · text/html · 21 characters");
     expect(collapsed).not.toContain("complete fetched body");
     expect(expanded).toContain("complete fetched body");
   });

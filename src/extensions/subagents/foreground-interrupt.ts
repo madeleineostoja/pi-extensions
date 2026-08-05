@@ -4,6 +4,7 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { promptForAction } from "#lib/ui/action-prompt";
 
 type ForegroundRun = {
   type: string;
@@ -80,10 +81,26 @@ export class ForegroundInterruptGuard {
     this.#confirmation = controller;
     this.#confirming = true;
 
-    void ctx.ui
-      .confirm(this.#title(runs.length), this.#message(runs), {
-        signal: controller.signal,
-      })
+    const confirmation =
+      typeof ctx.ui.custom === "function" && typeof ctx.ui.select === "function"
+        ? promptForAction({
+            ui: ctx.ui,
+            signal: controller.signal,
+            title: this.#title(runs.length),
+            detail: this.#message(runs),
+            choices: [
+              { value: "yes", label: "Yes" },
+              { value: "no", label: "No" },
+            ],
+            initialValue: "no",
+          }).then(
+            (result) => result.kind === "selected" && result.value === "yes",
+          )
+        : ctx.ui.confirm(this.#title(runs.length), this.#message(runs), {
+            signal: controller.signal,
+          });
+
+    void confirmation
       .then((confirmed) => {
         if (confirmed) {
           for (const run of runs) {

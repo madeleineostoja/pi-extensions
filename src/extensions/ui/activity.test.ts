@@ -98,6 +98,18 @@ describe("Activity", () => {
     ).toBe(false);
   });
 
+  it("keeps insertion order when live progress updates", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const publisher = createActivityPublisher(events, "x");
+    publisher.upsert(record("first", { updatedAt: 1 }));
+    publisher.upsert(record("second", { updatedAt: 2 }));
+    publisher.upsert(record("first", { updatedAt: 3, metric: "20k context" }));
+
+    expect(store.records.map((item) => item.id)).toEqual(["first", "second"]);
+  });
+
   it("removes final active work immediately", () => {
     const events = createEventBus();
     const store = new ActivityStore();

@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   compactDisplayText,
+  toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
@@ -124,21 +125,21 @@ export function registerRecordTool(
     label: "record_papercut",
     description: TOOL_DESCRIPTION,
     parameters: PapercutObservationSchema,
+    renderCall: toolCallRenderer({
+      name: "record_papercut",
+      detail: (args: PapercutObservation) => `${args.key} · ${args.title}`,
+      pending: "Recording papercut…",
+    }),
     renderResult: toolResultRenderer({
       summary(result) {
         const details = result.details as
-          | { outcome?: string; key?: string; title?: string; kind?: string }
+          | { outcome?: string; kind?: string }
           | undefined;
         if (details?.kind === "rejected") {
           return "Papercut was not recorded.";
         }
-        const key = compactDisplayText(details?.key, 64) || "papercut";
-        const title = compactDisplayText(details?.title, 120);
         const outcome = compactDisplayText(details?.outcome, 80);
-        return [
-          `Recorded ${key}${title ? ` · ${title}` : ""}.`,
-          ...(outcome ? [`Outcome: ${outcome}.`] : []),
-        ];
+        return `Recorded${outcome ? ` · ${outcome}` : ""}`;
       },
       partial() {
         return "Recording papercut…";

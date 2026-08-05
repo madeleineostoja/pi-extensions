@@ -1,6 +1,9 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { loadContext7Auth } from "./auth.js";
 import { LIMITS, byteLength, hasControl, truncateBytes } from "./bounds.js";
 import {
@@ -43,26 +46,18 @@ export function registerDocs(pi: ExtensionAPI, agentDir: () => string): void {
     description:
       "Retrieve bounded documentation for a named library or direct library ID. Omit version for current material; an explicit version must be an exact pin. This tool does not inspect the project or delegate research.",
     parameters: DocsParameters,
+    renderCall: toolCallRenderer({
+      name: "docs",
+      detail: (args: DocsInput) =>
+        `${args.subject}${args.version ? `@${args.version}` : ""}`,
+      pending: "Retrieving documentation…",
+    }),
     async execute(_toolCallId, input: DocsInput, signal) {
       return executeDocs(input, signal, { agentDir: agentDir() });
     },
     renderResult: toolResultRenderer({
-      summary(result, context) {
-        const details = result.details as {
-          resolution?: { selectedId?: string };
-          version?: { state?: string; pin?: string };
-        };
-        const subject = (context.args as { subject?: string } | undefined)
-          ?.subject;
-        const version = details?.version;
-        return [
-          `Documentation · ${subject ?? details?.resolution?.selectedId ?? "library"}.`,
-          ...(version?.state === "exact-version" && version.pin
-            ? [`Version: ${version.pin}.`]
-            : version?.state === "provider-current"
-              ? ["Version: provider current."]
-              : []),
-        ];
+      summary() {
+        return undefined;
       },
       partial() {
         return "Retrieving documentation…";

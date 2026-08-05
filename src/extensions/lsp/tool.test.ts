@@ -81,8 +81,7 @@ describe("lsp tool inputs and bounded render data", () => {
       .map((line: string) => line.trimEnd())
       .join("\n");
 
-    expect(collapsed).toContain("LSP definition · src/value.ts.");
-    expect(collapsed).toContain("2 results.");
+    expect(collapsed).toBe("2 results");
     expect(expanded).toContain("definition output");
   });
   it("distinguishes collapsed validation, unsupported, unavailable, stale, and thrown LSP outcomes", () => {
@@ -111,13 +110,7 @@ describe("lsp tool inputs and bounded render data", () => {
       },
       { symbol: "value\n\u001b[31m", file: "src/value.ts\nextra" },
     );
-    expect(validation).toContain(
-      "LSP definition · symbol “value” in src/value.ts extra.",
-    );
-    expect(validation).toContain(
-      "Request is invalid: definition requires file.",
-    );
-    expect(validation.split("\n")).toHaveLength(2);
+    expect(validation).toBe("Request is invalid: definition requires file.");
 
     expect(
       render(

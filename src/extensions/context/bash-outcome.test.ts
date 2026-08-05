@@ -254,7 +254,7 @@ describe("bash_outcome", () => {
       .render(120)
       .join("\n");
     expect(success.trimEnd()).toBe("Build succeeded.");
-    expect(colors).toEqual(["success"]);
+    expect(colors).toEqual(["toolOutput"]);
 
     colors.length = 0;
     const failure = definition

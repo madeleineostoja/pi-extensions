@@ -1,6 +1,9 @@
-import type {
-  ExtensionCommandContext,
-  Theme,
+import {
+  keyHint,
+  rawKeyHint,
+  type ExtensionCommandContext,
+  type KeybindingsManager,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
   Editor,
@@ -48,8 +51,8 @@ export async function showAgentsSurface(
 ): Promise<void> {
   const runtimes = [...new Set(Array.isArray(input) ? input : [input])];
   await ctx.ui.custom<void>(
-    (tui, theme, _keys, done) =>
-      new AgentsSurface(runtimes, ctx, tui, theme, done),
+    (tui, theme, keys, done) =>
+      new AgentsSurface(runtimes, ctx, tui, theme, done, keys),
   );
 }
 
@@ -87,6 +90,7 @@ export class AgentsSurface implements Component, Focusable {
     private readonly tui: TUI,
     private readonly theme: Theme,
     private readonly done: () => void,
+    private readonly keybindings?: Pick<KeybindingsManager, "matches">,
   ) {
     this.#roster = this.#replaceRoster(undefined, 0);
     this.#unsubscribers = runtimes.map((runtime) =>
@@ -110,7 +114,7 @@ export class AgentsSurface implements Component, Focusable {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape")) {
+    if (this.#matches(data, "tui.select.cancel", "escape")) {
       if (this.#mode === "roster") {
         this.#close();
       } else if (this.#mode === "activity" || this.#mode === "result") {
@@ -125,8 +129,10 @@ export class AgentsSurface implements Component, Focusable {
       return;
     }
     if (this.#mode === "activity") {
-      if (matchesKey(data, "up") || matchesKey(data, "down")) {
-        this.#activityScroll?.handleInput(data);
+      const up = this.#matches(data, "tui.select.up", "up");
+      const down = this.#matches(data, "tui.select.down", "down");
+      if (up || down) {
+        this.#activityScroll?.handleInput(up ? "\x1b[A" : "\x1b[B");
       } else if (matchesKey(data, "home") || matchesKey(data, "end")) {
         this.#activityScroll?.handleInput(data, { homeEnd: true });
       } else {
@@ -136,7 +142,11 @@ export class AgentsSurface implements Component, Focusable {
       return;
     }
     if (this.#mode === "result") {
-      this.#resultScroll?.handleInput(data, { homeEnd: true });
+      const up = this.#matches(data, "tui.select.up", "up");
+      const down = this.#matches(data, "tui.select.down", "down");
+      this.#resultScroll?.handleInput(up ? "\x1b[A" : down ? "\x1b[B" : data, {
+        homeEnd: true,
+      });
       this.tui.requestRender();
       return;
     }
@@ -165,7 +175,27 @@ export class AgentsSurface implements Component, Focusable {
                 title: `Agent result · ${displayType(this.#entry()?.snapshot)}`,
                 child: this.#resultComponent(),
               };
-    return new Panel({ theme: this.theme, ...options }).render(width);
+    return new Panel({
+      theme: this.theme,
+      ...options,
+      footer: this.#footer(),
+    }).render(width);
+  }
+
+  #matches(
+    data: string,
+    binding: Parameters<KeybindingsManager["matches"]>[1],
+    key: Parameters<typeof matchesKey>[1],
+  ): boolean {
+    return this.keybindings?.matches(data, binding) ?? matchesKey(data, key);
+  }
+
+  #footer(): Component {
+    const hints =
+      this.#mode === "roster" || this.#mode === "landing"
+        ? `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", this.#mode === "roster" ? "close" : "back")}`
+        : `${rawKeyHint("↑↓", "scroll")}  ${keyHint("tui.select.cancel", "back")}`;
+    return { render: () => [hints], invalidate() {} };
   }
 
   #entries(): Entry[] {
@@ -236,6 +266,14 @@ export class AgentsSurface implements Component, Focusable {
     const entries = this.#entries();
     this.#rosterEntries = entries;
     const grouped: WideListEntry<Entry>[] = [];
+    const prefixWidth = Math.max(
+      0,
+      ...entries.map((entry) => visibleWidth(rosterPrefix(entry))),
+    );
+    const typeWidth = Math.max(
+      0,
+      ...entries.map((entry) => visibleWidth(displayType(entry.snapshot))),
+    );
     for (const entry of entries) {
       if (
         grouped.at(-1)?.kind !== "section" &&
@@ -249,12 +287,17 @@ export class AgentsSurface implements Component, Focusable {
           style: (text) => this.theme.fg("muted", text),
         });
       }
-      grouped.push(rosterItem(entry, this.theme));
+      grouped.push(rosterItem(entry, this.theme, prefixWidth, typeWidth));
     }
     const list = new WideSelectList({
       entries: grouped,
       maxVisible: 12,
       selectedPrefix: (text) => this.theme.fg("accent", text),
+      keybindings: this.keybindings,
+      empty: {
+        text: "No active or retained agents.",
+        style: (text) => this.theme.fg("muted", text),
+      },
       onSelect: (item) => {
         const index = this.#rosterEntries.findIndex(
           (entry) => entry.value === item.value,
@@ -407,6 +450,7 @@ export class AgentsSurface implements Component, Focusable {
       })),
       maxVisible: 6,
       selectedPrefix: (text) => this.theme.fg("accent", text),
+      keybindings: this.keybindings,
       onSelect: (item) => void this.#action(item.data),
     });
     this.#actions.setSelectedValue(
@@ -606,14 +650,23 @@ export class AgentsSurface implements Component, Focusable {
   }
 }
 
-function rosterItem(entry: Entry, theme: Theme): WideListItem<Entry> {
+function rosterPrefix(entry: Entry): string {
+  return `${"  ".repeat(Math.min(entry.depth, 3))}${entry.depth ? "└ " : ""}${glyph(entry.snapshot.status)} `;
+}
+
+function rosterItem(
+  entry: Entry,
+  theme: Theme,
+  prefixWidth: number,
+  typeWidth: number,
+): WideListItem<Entry> {
   return {
     kind: "item",
     value: entry.value,
     data: entry,
-    prefix: `${"  ".repeat(Math.min(entry.depth, 3))}${entry.depth ? "└ " : ""}${glyph(entry.snapshot.status)} `,
-    prefixWidth: 9,
-    fixed: [{ text: displayType(entry.snapshot), width: 16 }],
+    prefix: rosterPrefix(entry),
+    prefixWidth,
+    fixed: [{ text: displayType(entry.snapshot), width: typeWidth }],
     elastic: bounded(entry.snapshot.description, 180),
     right: duration(entry.snapshot),
     elasticStyle: (text) => theme.fg("muted", text),

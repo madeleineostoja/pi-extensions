@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ModelPreset } from "#lib/config";
+import { toolCallRenderer } from "#lib/ui/tool-result-renderer";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import type { ForegroundInterruptGuard } from "./foreground-interrupt.js";
@@ -45,6 +46,34 @@ export const PublicAgentParameters = Type.Object(
 );
 
 export type PublicAgentParams = Static<typeof PublicAgentParameters>;
+
+const GetSubagentResultParameters = Type.Object(
+  {
+    id: Type.String({ description: "Background subagent id." }),
+    wait: Type.Boolean({
+      description:
+        "false returns current status immediately; true waits for completion and final cleanup.",
+      default: false,
+    }),
+    include_progress: Type.Optional(
+      Type.Boolean({
+        description:
+          "Include a bounded point-in-time excerpt of untrusted partial progress. wait:false returns currently available progress immediately; for stopped or failed agents, wait:true waits for frozen post-cleanup progress. Completed agents remain final-result only.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+type GetSubagentResultParams = Static<typeof GetSubagentResultParameters>;
+
+const SteerSubagentParameters = Type.Object(
+  {
+    id: Type.String({ description: "Background subagent id." }),
+    message: Type.String({ description: "Steering message to send." }),
+  },
+  { additionalProperties: false },
+);
+type SteerSubagentParams = Static<typeof SteerSubagentParameters>;
 
 export function resolveAgentSelection(
   type: PublicAgentParams["subagent_type"],
@@ -144,23 +173,14 @@ export function registerPublicAgentTools({
     label: "get_subagent_result",
     description:
       "Join a background subagent or intentionally inspect bounded partial progress. wait:true blocks for completion; wait:false returns its current status immediately.",
-    parameters: Type.Object(
-      {
-        id: Type.String({ description: "Background subagent id." }),
-        wait: Type.Boolean({
-          description:
-            "false returns current status immediately; true waits for completion and final cleanup.",
-          default: false,
-        }),
-        include_progress: Type.Optional(
-          Type.Boolean({
-            description:
-              "Include a bounded point-in-time excerpt of untrusted partial progress. wait:false returns currently available progress immediately; for stopped or failed agents, wait:true waits for frozen post-cleanup progress. Completed agents remain final-result only.",
-          }),
-        ),
-      },
-      { additionalProperties: false },
-    ),
+    parameters: GetSubagentResultParameters,
+    renderCall: toolCallRenderer({
+      name: "get_subagent_result",
+      detail: (args: GetSubagentResultParams) =>
+        `${args.id}${args.wait ? " · wait" : ""}`,
+      pending: (args: GetSubagentResultParams) =>
+        args.wait ? "Waiting for subagent…" : "Reading subagent state…",
+    }),
     async execute(_toolCallId, params) {
       const response = await runtime.publicResult(
         params.id,
@@ -177,13 +197,12 @@ export function registerPublicAgentTools({
     label: "steer_subagent",
     description:
       "Queue guidance for a running background subagent after its current assistant turn's tool calls. Fails for unknown or completed agents.",
-    parameters: Type.Object(
-      {
-        id: Type.String({ description: "Background subagent id." }),
-        message: Type.String({ description: "Steering message to send." }),
-      },
-      { additionalProperties: false },
-    ),
+    parameters: SteerSubagentParameters,
+    renderCall: toolCallRenderer({
+      name: "steer_subagent",
+      detail: (args: SteerSubagentParams) => args.id,
+      pending: "Queueing guidance…",
+    }),
     async execute(_toolCallId, params) {
       const snapshot = await runtime.steer(params.id, params.message);
       return toolResult(snapshot, "steer");

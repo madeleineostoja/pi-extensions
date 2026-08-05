@@ -37,8 +37,9 @@ describe("BTW promotion", () => {
     const collapsed = renderBtwMessage(transcript, { expanded: false }, theme);
     const expanded = renderBtwMessage(transcript, { expanded: true }, theme);
 
-    expect(collapsed?.render(80).join("\n")).toContain(
-      "Promoted side question: What is FastAPI?",
+    expect(collapsed?.render(80).join("\n")).toContain("What is FastAPI?");
+    expect(collapsed?.render(80).join("\n")).not.toContain(
+      "Promoted side question",
     );
     const lines = expanded?.render(80).join("\n") ?? "";
     expect(lines).toContain("Question");

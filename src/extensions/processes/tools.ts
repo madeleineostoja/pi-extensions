@@ -1,7 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { retainResult, decodeRetainedResult } from "#context/retained-result";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import {
   ProcessRuntime,
   type ProcessProjection,
@@ -29,6 +32,8 @@ const StartParams = Type.Object(
   },
   { additionalProperties: false },
 );
+
+type StartInput = Static<typeof StartParams>;
 
 const ResultParams = Type.Object(
   {
@@ -70,6 +75,8 @@ const ResultParams = Type.Object(
   { additionalProperties: false },
 );
 
+type ResultInput = Static<typeof ResultParams>;
+
 const StopParams = Type.Object(
   {
     id: Type.String({
@@ -79,6 +86,8 @@ const StopParams = Type.Object(
   },
   { additionalProperties: false },
 );
+
+type StopInput = Static<typeof StopParams>;
 
 function truncateUtf8(text: string, maxBytes: number): string {
   let bytes = 0;
@@ -271,7 +280,7 @@ export const renderProcessResult = toolResultRenderer({
     const details = processResultDetails(result.details);
     return details
       ? [
-          processStatus(details.snapshot),
+          compactProcessStatus(details.snapshot),
           ...(details.waitOutcome === undefined
             ? []
             : [waitStatus(details.waitOutcome, details.snapshot.status)]),
@@ -291,6 +300,16 @@ export const renderProcessResult = toolResultRenderer({
     return decodeRetainedResult(result.details)?.content ?? result.content;
   },
 });
+
+function compactProcessStatus(snapshot: ProcessSnapshot): string {
+  const settlement =
+    snapshot.exitCode !== null
+      ? ` · exit ${snapshot.exitCode}`
+      : snapshot.signal
+        ? ` · signal ${snapshot.signal}`
+        : "";
+  return `${snapshot.id} · ${snapshot.status}${settlement}`;
+}
 
 function firstLine(content: unknown): string {
   if (!Array.isArray(content)) {
@@ -318,6 +337,11 @@ export function registerProcessTools(
     description:
       "Start and manage a foreground non-interactive command. Returns an ID for later inspection, joining, or stopping.",
     parameters: StartParams,
+    renderCall: toolCallRenderer({
+      name: "start_process",
+      detail: (args: StartInput) => args.description,
+      pending: "Starting managed process…",
+    }),
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const snapshot = await runtime().start({
         ...params,
@@ -336,6 +360,12 @@ export function registerProcessTools(
     description:
       "Join or inspect a managed process. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
     parameters: ResultParams,
+    renderCall: toolCallRenderer({
+      name: "get_process_result",
+      detail: (args: ResultInput) => `${args.id}${args.wait ? " · wait" : ""}`,
+      pending: (args: ResultInput) =>
+        args.wait ? "Waiting for process…" : "Reading process state…",
+    }),
     async execute(toolCallId, params, signal) {
       const mode = params.resultMode ?? "output";
       validateOutcomeSelection(mode, params.tailLines, params.find);
@@ -367,6 +397,11 @@ export function registerProcessTools(
     description:
       "Stop a managed process and return its final output or a recallable point-in-time status.",
     parameters: StopParams,
+    renderCall: toolCallRenderer({
+      name: "stop_process",
+      detail: (args: StopInput) => args.id,
+      pending: "Stopping process…",
+    }),
     async execute(toolCallId, params) {
       const mode = params.resultMode ?? "output";
       const result = await runtime().stop(params.id);

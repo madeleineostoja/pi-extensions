@@ -27,6 +27,12 @@ function panel(
     value: new BtwPanel(
       tui,
       theme,
+      {
+        matches: (data, binding) =>
+          (binding === "tui.select.cancel" && data === "\x1b") ||
+          (binding === "tui.select.up" && data === "\x1b[A") ||
+          (binding === "tui.select.down" && data === "\x1b[B"),
+      },
       done,
       {
         question: "What changed?",

@@ -1,9 +1,16 @@
-import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  getMarkdownTheme,
+  keyHint,
+  rawKeyHint,
+  type KeybindingsManager,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
   Markdown,
   matchesKey,
   type Component,
   type TUI,
+  truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Panel } from "#lib/ui/panel";
@@ -52,28 +59,6 @@ class BtwBody implements Component {
   invalidate(): void {}
 }
 
-class BtwContent implements Component {
-  constructor(private readonly owner: BtwPanel) {}
-
-  render(width: number): string[] {
-    return [
-      ...this.owner.scroll.render(width),
-      this.owner.theme.fg(
-        "dim",
-        this.owner.state.status === "pending"
-          ? "esc abort"
-          : this.owner.state.status === "answer"
-            ? "s send to session · esc close"
-            : "esc close",
-      ),
-    ];
-  }
-
-  invalidate(): void {
-    this.owner.scroll.invalidate();
-  }
-}
-
 export class BtwPanel implements Component {
   readonly scroll: ScrollViewport;
   private readonly panel: Panel;
@@ -83,13 +68,14 @@ export class BtwPanel implements Component {
   constructor(
     private readonly tui: TUI,
     readonly theme: Theme,
+    private readonly keybindings: Pick<KeybindingsManager, "matches">,
     private readonly done: () => void,
     public state: BtwPanelState,
     private readonly abortController: AbortController,
     private readonly promote: (exchange: BtwPromotion) => void,
     maxRows = Math.max(6, Math.floor((tui.terminal.rows ?? 24) * 0.6)),
   ) {
-    const contentRows = Math.max(1, maxRows - 4);
+    const contentRows = Math.max(1, maxRows - 5);
     this.scroll = new ScrollViewport({
       content: new BtwBody(state, theme),
       viewportHeight: contentRows,
@@ -98,7 +84,11 @@ export class BtwPanel implements Component {
     this.panel = new Panel({
       theme,
       title: "/btw",
-      child: new BtwContent(this),
+      child: this.scroll,
+      footer: {
+        render: (width) => [this.hintLine(width)],
+        invalidate() {},
+      },
     });
   }
 
@@ -127,11 +117,11 @@ export class BtwPanel implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape")) {
+    if (this.#matches(data, "tui.select.cancel", "escape")) {
       this.close();
       return;
     }
-    if (this.state.status === "answer" && data === "s") {
+    if (this.state.status === "answer" && matchesKey(data, "s")) {
       if (this.promoted) {
         return;
       }
@@ -143,10 +133,32 @@ export class BtwPanel implements Component {
       this.close();
       return;
     }
-    if (matchesKey(data, "up") || matchesKey(data, "down")) {
-      this.scroll.handleInput(data);
+    const up = this.#matches(data, "tui.select.up", "up");
+    const down = this.#matches(data, "tui.select.down", "down");
+    if (up || down) {
+      this.scroll.handleInput(up ? "\x1b[A" : "\x1b[B");
       this.tui.requestRender();
     }
+  }
+
+  #matches(
+    data: string,
+    binding: Parameters<KeybindingsManager["matches"]>[1],
+    key: Parameters<typeof matchesKey>[1],
+  ): boolean {
+    return typeof this.keybindings?.matches === "function"
+      ? this.keybindings.matches(data, binding)
+      : matchesKey(data, key);
+  }
+
+  hintLine(width: number): string {
+    const action =
+      this.state.status === "pending"
+        ? keyHint("tui.select.cancel", "abort")
+        : this.state.status === "answer"
+          ? `${rawKeyHint("s", "send")}  ${keyHint("tui.select.cancel", "close")}`
+          : keyHint("tui.select.cancel", "close");
+    return truncateToWidth(action, width);
   }
 
   render(width: number): string[] {

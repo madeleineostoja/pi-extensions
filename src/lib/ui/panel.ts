@@ -55,7 +55,7 @@ export type PanelOptions = {
   child: Component;
   title?: string;
   subtitle?: string;
-  footer?: string;
+  footer?: string | Component;
   padding?: number;
   borderColor?: (text: string) => string;
 };
@@ -87,10 +87,13 @@ export class Panel extends Container {
     this.addChild(new PaddedChild(options.child, padding));
 
     if (options.footer) {
+      this.addChild(new PanelLabel("", padding, () => ""));
       this.addChild(
-        new PanelLabel(options.footer, padding, (text) =>
-          options.theme.fg("dim", text),
-        ),
+        typeof options.footer === "string"
+          ? new PanelLabel(options.footer, padding, (text) =>
+              options.theme.fg("dim", text),
+            )
+          : new PaddedChild(options.footer, padding),
       );
     }
     this.addChild(new DynamicBorder(borderColor));

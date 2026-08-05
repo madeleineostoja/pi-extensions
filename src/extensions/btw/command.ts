@@ -50,7 +50,7 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
       }
 
       closeActive();
-      await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+      await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
         const abortController = new AbortController();
         let panel: BtwPanel | undefined;
         let startTimer: NodeJS.Timeout | undefined;
@@ -81,6 +81,7 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
         panel = new BtwPanel(
           tui,
           theme,
+          keybindings,
           close,
           {
             question,

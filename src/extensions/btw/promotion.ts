@@ -53,14 +53,7 @@ export const renderBtwMessage: MessageRenderer<BtwMessageDetails> = (
     new Text(theme.bold(theme.fg("customMessageLabel", "btw")), 0, 0),
   );
   view.addChild(
-    new Text(
-      theme.fg(
-        "customMessageText",
-        `Promoted side question: ${details.question}`,
-      ),
-      0,
-      0,
-    ),
+    new Text(theme.fg("customMessageText", details.question), 0, 0),
   );
   if (!options.expanded) {
     return view;

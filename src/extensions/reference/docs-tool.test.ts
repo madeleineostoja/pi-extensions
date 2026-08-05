@@ -55,7 +55,10 @@ describe("docs resolution", () => {
       { registerTool: (definition: unknown) => (tool = definition) } as never,
       () => "",
     );
-    const theme = { fg: (_color: string, text: string) => text };
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
     const collapsed = tool
       .renderResult(result, { expanded: false, isPartial: false }, theme, {
         args: input,
@@ -73,7 +76,13 @@ describe("docs resolution", () => {
       .map((line: string) => line.trimEnd())
       .join("\n");
 
-    expect(collapsed).toContain("Documentation · Acme---Widget.");
+    const call = tool
+      .renderCall(input, theme, { isPartial: false })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+    expect(call).toBe("docs Acme---Widget");
+    expect(collapsed).toBe("");
     expect(expanded).toContain("provider material");
   });
   it("chooses the first exact normalized match and reports provider-current", async () => {

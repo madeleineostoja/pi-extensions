@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   compactDisplayText,
+  toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import { Type, type Static } from "typebox";
@@ -134,6 +135,15 @@ export function registerLsp(pi: ExtensionAPI): void {
     description:
       "Read-only, workspace-scoped language-semantic queries for definitions, implementations, references, type information, symbols, hover, diagnostics, and server status. Results are bounded and reflect available configured language servers.",
     parameters: LspParameters,
+    renderCall: toolCallRenderer({
+      name: "lsp",
+      detail: (args: LspInput) => {
+        const action = args.action.replaceAll("_", " ");
+        const target = lspTarget(args, action);
+        return `${action}${target ? ` · ${target}` : ""}`;
+      },
+      pending: "Querying language server…",
+    }),
     async execute(_toolCallId, input: LspInput, signal, _onUpdate, ctx) {
       return executeLsp(input, signal, ctx);
     },
@@ -786,31 +796,23 @@ function lspSummary(
     typeof record.action === "string"
       ? record.action.replaceAll("_", " ")
       : "request";
-  const target = lspTarget(args, action);
-  const heading = `LSP ${action}${target ? ` · ${target}` : ""}.`;
   if (record.success === false) {
-    return [heading, lspFailureSummary(record, result?.content)];
+    return [lspFailureSummary(record, result?.content)];
   }
   if (action === "status") {
     const count = Array.isArray(record.servers)
       ? record.servers.length
       : undefined;
-    return [
-      "LSP status.",
-      ...(count === undefined
-        ? []
-        : [`${count} server${count === 1 ? "" : "s"} reported.`]),
-    ];
+    return count === undefined
+      ? []
+      : [`${count} server${count === 1 ? "" : "s"}`];
   }
   const count = [record.locations, record.symbols, record.diagnostics].find(
     Array.isArray,
   )?.length;
-  return [
-    heading,
-    ...(count === undefined
-      ? []
-      : [`${count} result${count === 1 ? "" : "s"}.`]),
-  ];
+  return count === undefined
+    ? []
+    : [`${count} result${count === 1 ? "" : "s"}`];
 }
 
 function lspFailureSummary(

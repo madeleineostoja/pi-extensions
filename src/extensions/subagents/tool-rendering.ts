@@ -1,7 +1,7 @@
-import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import {
   compactDisplayText,
+  toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import type { RuntimeHealth, RuntimeSnapshot } from "./runtime.js";
@@ -40,14 +40,12 @@ export function toolResult(
   } satisfies AgentToolResultWithStatus;
 }
 
-export function renderAgentCall(args: PublicAgentParams, theme: Theme): Text {
-  const description = args.description ?? previewText(args.prompt, 120) ?? "";
-  return new Text(
-    `${theme.fg("toolTitle", theme.bold("Agent"))} ${theme.fg("accent", args.subagent_type)} ${theme.fg("muted", description)}`,
-    0,
-    0,
-  );
-}
+export const renderAgentCall = toolCallRenderer<PublicAgentParams>({
+  name: "Agent",
+  detail: (args) =>
+    `${args.subagent_type} · ${args.description ?? previewText(args.prompt, 120) ?? "subagent"}`,
+  pending: "Starting subagent…",
+});
 
 export const renderAgentResult = toolResultRenderer({
   summary(result) {
@@ -98,6 +96,11 @@ export const renderAgentResult = toolResultRenderer({
     return `${errorVerb(details)}${id ? ` ${id}` : ""}: ${reason}`;
   },
   content: "markdown",
+  expandedContent(result) {
+    return agentDetails(result)?.presentation === "background"
+      ? []
+      : result.content;
+  },
 });
 
 function completedSummary(details: AgentToolDetails): string | string[] {
@@ -122,11 +125,8 @@ function completedSummary(details: AgentToolDetails): string | string[] {
   return metrics ? [sentence, metrics] : sentence;
 }
 
-function backgroundSummary(details: AgentToolDetails): string[] {
-  return [
-    `Started ${details.id} in the background.`,
-    `Use get_subagent_result with id "${details.id}" and wait:true when its result becomes a dependency; do not poll.`,
-  ];
+function backgroundSummary(details: AgentToolDetails): string {
+  return `${details.id} · ${details.status} in background`;
 }
 
 function realMetrics(

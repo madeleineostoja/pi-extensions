@@ -1,3 +1,4 @@
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
   truncateToWidth,
@@ -37,6 +38,8 @@ export type WideSelectListOptions<T> = {
   entries: readonly WideListEntry<T>[];
   maxVisible: number;
   selectedPrefix: (text: string) => string;
+  empty?: { text: string; style?: (text: string) => string };
+  keybindings?: Pick<KeybindingsManager, "matches">;
   onSelect?: (item: WideListItem<T>) => void;
 };
 
@@ -68,11 +71,16 @@ export class WideSelectList<T> implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "up")) {
+    const matches = (
+      binding: Parameters<KeybindingsManager["matches"]>[1],
+      key: Parameters<typeof matchesKey>[1],
+    ) =>
+      this.options.keybindings?.matches(data, binding) ?? matchesKey(data, key);
+    if (matches("tui.select.up", "up")) {
       this.#move(-1);
-    } else if (matchesKey(data, "down")) {
+    } else if (matches("tui.select.down", "down")) {
       this.#move(1);
-    } else if (matchesKey(data, "enter")) {
+    } else if (matches("tui.select.confirm", "enter")) {
       const selected = this.getSelectedItem();
       if (selected) {
         this.#onSelect?.(selected);
@@ -81,6 +89,10 @@ export class WideSelectList<T> implements Component {
   }
 
   render(width: number): string[] {
+    if (this.#entries.length === 0 && this.options.empty) {
+      const text = truncateToWidth(this.options.empty.text, width);
+      return [this.options.empty.style?.(text) ?? text];
+    }
     this.#ensureVisible();
     const visible = this.#entries.slice(
       this.#scrollOffset,

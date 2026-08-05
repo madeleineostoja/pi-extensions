@@ -144,6 +144,14 @@ function selectedLine(surface: AgentsSurface): string {
 }
 
 describe("AgentsSurface roster and landing", () => {
+  it("shows an explicit empty roster", () => {
+    const text = plain(
+      rendered(fixture([new FakeRuntime("runtime", [])]).surface),
+    );
+
+    expect(text).toContain("No active or retained agents.");
+  });
+
   it("renders headerless groups with aligned nested rows, right durations, and no hidden Implement workers", () => {
     const runtime = new FakeRuntime("runtime", [
       snapshot({ id: "parent", key: "runtime:parent", description: "parent" }),

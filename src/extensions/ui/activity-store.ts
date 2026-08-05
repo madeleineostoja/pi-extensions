@@ -35,6 +35,8 @@ function qualified(identity: ActivityIdentity): string {
 export class ActivityStore {
   #records = new Map<string, StoredActivityRecord>();
   #generations = new Map<string, string>();
+  #order = new Map<string, number>();
+  #nextOrder = 0;
   #listeners = new Set<() => void>();
   #clock: ReturnType<typeof setTimeout> | undefined;
 
@@ -77,7 +79,9 @@ export class ActivityStore {
       return true;
     }
     if (event.operation === "remove") {
-      const changed = this.#records.delete(`${event.source}:${event.id}`);
+      const key = `${event.source}:${event.id}`;
+      const changed = this.#records.delete(key);
+      this.#order.delete(key);
       if (changed) {
         this.#notify();
         this.#syncClock();
@@ -90,6 +94,7 @@ export class ActivityStore {
   clear(): void {
     this.#records.clear();
     this.#generations.clear();
+    this.#order.clear();
     this.#notify();
     this.#syncClock();
   }
@@ -121,6 +126,9 @@ export class ActivityStore {
         return false;
       }
     }
+    if (!existing) {
+      this.#order.set(key, this.#nextOrder++);
+    }
     this.#records.set(key, candidate);
     this.#notify();
     this.#syncClock();
@@ -145,6 +153,7 @@ export class ActivityStore {
     for (const [key, record] of this.#records) {
       if (record.source === source) {
         this.#records.delete(key);
+        this.#order.delete(key);
       }
     }
   }
@@ -166,8 +175,7 @@ export class ActivityStore {
     }
     const compare = (left: StoredActivityRecord, right: StoredActivityRecord) =>
       priority(left.state) - priority(right.state) ||
-      right.updatedAt - left.updatedAt ||
-      left.key.localeCompare(right.key);
+      (this.#order.get(left.key) ?? 0) - (this.#order.get(right.key) ?? 0);
     const subtreePriority = (record: StoredActivityRecord): number =>
       (children.get(record.key) ?? []).reduce(
         (best, child) => Math.min(best, subtreePriority(child)),

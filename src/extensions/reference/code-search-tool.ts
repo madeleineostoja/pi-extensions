@@ -1,6 +1,9 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { loadGithubAuth } from "./auth.js";
 import { LIMITS, byteLength, hasControl } from "./bounds.js";
 import {
@@ -79,6 +82,12 @@ export function registerCodeSearch(
     description:
       "Search observed usage in GitHub source visible to the configured credential. Matches are bounded provider excerpts, not proof of correctness, authority, freshness, identity, or repository health.",
     parameters: CodeSearchParameters,
+    renderCall: toolCallRenderer({
+      name: "code_search",
+      detail: (args: CodeSearchInput) =>
+        [args.query, args.language].filter(Boolean).join(" · "),
+      pending: "Searching GitHub code…",
+    }),
     async execute(_toolCallId, input: CodeSearchInput, signal) {
       return executeCodeSearch(input, signal, { agentDir: agentDir() });
     },
@@ -90,14 +99,9 @@ export function registerCodeSearch(
           discarded?: number;
           truncated?: boolean;
         };
-        return [
-          `GitHub code search · ${details?.query ?? "query"}.`,
-          ...(typeof details?.accepted === "number"
-            ? [
-                `${details.accepted} match${details.accepted === 1 ? "" : "es"}${details.truncated ? " · more may be available" : ""}.`,
-              ]
-            : []),
-        ];
+        return typeof details?.accepted === "number"
+          ? `${details.accepted} match${details.accepted === 1 ? "" : "es"}${details.truncated ? " · more may be available" : ""}`
+          : undefined;
       },
       partial() {
         return "Searching GitHub code…";

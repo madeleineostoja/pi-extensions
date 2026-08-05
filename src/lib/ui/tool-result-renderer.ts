@@ -10,8 +10,20 @@ import {
 type TextBlock = { type: "text"; text: string };
 type ResultLike = { content: unknown; details?: unknown };
 type RenderOptions = { expanded: boolean; isPartial: boolean };
-type RenderContext = { isError?: boolean; args?: unknown };
+type RenderContext = {
+  isError?: boolean;
+  args?: unknown;
+  isPartial?: boolean;
+  invalidate?: () => void;
+  state?: { hasToolOutput?: boolean };
+};
 type Summary = string | readonly string[] | undefined;
+
+type CallRendererOptions<Arguments> = {
+  name: string;
+  detail?: (args: Arguments) => unknown;
+  pending?: string | ((args: Arguments) => string);
+};
 
 type RendererOptions = {
   summary: (result: ResultLike, context: RenderContext) => Summary;
@@ -25,6 +37,33 @@ type RendererOptions = {
   ) => Summary;
   expandedContent?: (result: ResultLike, context: RenderContext) => unknown;
 };
+
+/** Renders a compact call identity and a transient state before output exists. */
+export function toolCallRenderer<Arguments>(
+  options: CallRendererOptions<Arguments>,
+) {
+  return function renderCall(
+    args: Arguments,
+    theme: Theme,
+    context: RenderContext = {},
+  ): Component {
+    const detail = compactDisplayText(options.detail?.(args), 160);
+    const pending =
+      typeof options.pending === "function"
+        ? options.pending(args)
+        : options.pending;
+    const title = `${theme.fg("toolTitle", theme.bold(options.name))}${
+      detail ? ` ${theme.fg("accent", detail)}` : ""
+    }`;
+    return new Text(
+      context.isPartial !== false && !context.state?.hasToolOutput
+        ? `${title}\n${theme.fg("muted", pending ?? "Working…")}`
+        : title,
+      0,
+      0,
+    );
+  };
+}
 
 /**
  * Composes feature-owned semantic summaries with complete model-facing text.
@@ -41,6 +80,14 @@ export function toolResultRenderer(options: RendererOptions) {
       ...context,
       isError: context.isError ?? result.isError,
     };
+    if (
+      renderOptions.isPartial &&
+      renderContext.state &&
+      !renderContext.state.hasToolOutput
+    ) {
+      renderContext.state.hasToolOutput = true;
+      queueMicrotask(() => renderContext.invalidate?.());
+    }
     const state = renderContext.isError
       ? options.error
       : renderOptions.isPartial
@@ -165,6 +212,10 @@ function textBlocks(content: unknown): TextBlock[] {
 function tone(
   context: RenderContext,
   options: RenderOptions,
-): "error" | "warning" | "success" {
-  return context.isError ? "error" : options.isPartial ? "warning" : "success";
+): "error" | "warning" | "toolOutput" {
+  return context.isError
+    ? "error"
+    : options.isPartial
+      ? "warning"
+      : "toolOutput";
 }

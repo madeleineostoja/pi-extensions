@@ -1,12 +1,37 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { toolResultRenderer } from "./tool-result-renderer.js";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "./tool-result-renderer.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
 } as Theme;
 
 describe("toolResultRenderer", () => {
+  it("promotes call identity and removes the pending state after settlement", () => {
+    const render = toolCallRenderer<{ subject: string }>({
+      name: "docs",
+      detail: (args) => args.subject,
+      pending: "Retrieving documentation…",
+    });
+
+    expect(
+      render({ subject: "vitest" }, theme, { isPartial: true })
+        .render(200)
+        .map((line) => line.trimEnd())
+        .join("\n"),
+    ).toBe("docs vitest\nRetrieving documentation…");
+    expect(
+      render({ subject: "vitest" }, theme, { isPartial: false })
+        .render(200)
+        .map((line) => line.trimEnd())
+        .join("\n"),
+    ).toBe("docs vitest");
+  });
+
   it("keeps multi-line semantic summaries compact and every text block ordered when expanded", () => {
     const render = toolResultRenderer({
       summary: () => ["Completed query.", "Two providers responded."],

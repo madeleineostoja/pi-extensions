@@ -26,6 +26,7 @@ import {
 import { createImplementActivity } from "./activity.js";
 import { createTerminalHandoffPublisher } from "./terminal-handoff-publisher.js";
 import type { RunState } from "./store.js";
+import { showImplementRunSurface } from "./run-surface.js";
 
 type ImplementActivity = ReturnType<typeof createImplementActivity>;
 
@@ -141,11 +142,31 @@ export function registerImplementCommand(
       if (parsed.name === "status") {
         if (parsed.runId) {
           const run = findRun(checkoutRoot, parsed.runId, active);
-          ctx.ui.notify(formatRunListing(run), "info");
+          if (run.kind === "historical") {
+            ctx.ui.notify(formatRunListing(run), "warning");
+          } else if (ctx.mode === "tui" && ctx.hasUI) {
+            await showImplementRunSurface(
+              ctx,
+              checkoutRoot,
+              run.state,
+              "overview",
+            );
+          } else {
+            ctx.ui.notify(formatStatus(run.state), "info");
+          }
           return;
         }
         if (active) {
-          ctx.ui.notify(formatStatus(active.store.read()), "info");
+          if (ctx.mode === "tui" && ctx.hasUI) {
+            await showImplementRunSurface(
+              ctx,
+              checkoutRoot,
+              active.store.read(),
+              "overview",
+            );
+          } else {
+            ctx.ui.notify(formatStatus(active.store.read()), "info");
+          }
           return;
         }
         const runs = listCheckoutRuns(checkoutRoot);
@@ -161,7 +182,19 @@ export function registerImplementCommand(
         if (!parsed.runId) {
           throw new Error("Inspect requires a run ID.");
         }
-        ctx.ui.notify(inspectRun(checkoutRoot, parsed.runId), "info");
+        const run = findRun(checkoutRoot, parsed.runId, active);
+        if (run.kind === "historical") {
+          ctx.ui.notify(formatRunListing(run), "warning");
+        } else if (ctx.mode === "tui" && ctx.hasUI) {
+          await showImplementRunSurface(
+            ctx,
+            checkoutRoot,
+            run.state,
+            "details",
+          );
+        } else {
+          ctx.ui.notify(inspectRun(checkoutRoot, parsed.runId), "info");
+        }
         return;
       }
       if (parsed.name === "cleanup-completed") {
@@ -555,10 +588,7 @@ async function showRunMenu(
   if (action === "Back") {
     return "back";
   }
-  if (action === "Status") {
-    return { kind: "control", name: "status", runId: run.runId };
-  }
-  if (action === "Inspect") {
+  if (action === "Details") {
     return { kind: "control", name: "inspect", runId: run.runId };
   }
   if (action === "Stop") {
@@ -587,7 +617,7 @@ export function runMenuActions(
   phase: RunState["phase"],
   current: boolean,
 ): string[] {
-  const actions = ["Status", "Inspect"];
+  const actions = ["Details"];
   if (current && !["completed", "incomplete", "failed"].includes(phase)) {
     actions.push("Stop");
   }

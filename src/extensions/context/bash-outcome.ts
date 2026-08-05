@@ -1,8 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { executeSandboxBash } from "#sandbox/bash";
-import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
 import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, retainResult } from "./retained-result.ts";
@@ -55,13 +57,11 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
         { includeRecallGuidance: !noOutput },
       );
     },
-    renderCall(args, theme) {
-      return new Text(
-        `${theme.fg("toolTitle", theme.bold("bash_outcome"))} ${theme.fg("accent", `$ ${formatBashTarget(args.command)}`)}`,
-        0,
-        0,
-      );
-    },
+    renderCall: toolCallRenderer({
+      name: "bash_outcome",
+      detail: (args) => `$ ${formatBashTarget(args.command)}`,
+      pending: "Running…",
+    }),
     renderResult: toolResultRenderer({
       summary(result) {
         return (

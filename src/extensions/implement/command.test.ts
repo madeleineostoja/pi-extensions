@@ -68,32 +68,27 @@ describe("/implement command", () => {
 
   it("offers terminal and interrupted retained runs cleanup without continue", () => {
     expect(runMenuActions("failed", true)).toEqual([
-      "Status",
-      "Inspect",
+      "Details",
       "Clean up",
       "Back",
     ]);
     expect(runMenuActions("failed", false)).toEqual([
-      "Status",
-      "Inspect",
+      "Details",
       "Clean up",
       "Back",
     ]);
     expect(runMenuActions("incomplete", true)).toEqual([
-      "Status",
-      "Inspect",
+      "Details",
       "Clean up",
       "Back",
     ]);
     expect(runMenuActions("running", false)).toEqual([
-      "Status",
-      "Inspect",
+      "Details",
       "Clean up",
       "Back",
     ]);
     expect(runMenuActions("stopping", false)).toEqual([
-      "Status",
-      "Inspect",
+      "Details",
       "Clean up",
       "Back",
     ]);

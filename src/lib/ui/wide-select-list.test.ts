@@ -18,6 +18,19 @@ function list(
 }
 
 describe("WideSelectList", () => {
+  it("renders an owner-provided empty state", () => {
+    const current = new WideSelectList<string>({
+      entries: [],
+      maxVisible: 3,
+      selectedPrefix: (text) => text,
+      empty: { text: "No managed processes." },
+    });
+
+    expect(current.render(80)).toEqual(["No managed processes."]);
+    current.handleInput("\r");
+    expect(current.getSelectedItem()).toBeUndefined();
+  });
+
   it("skips sections and preserves a stable selection or nearest item", () => {
     const current = list([
       { kind: "section", label: "Active" },

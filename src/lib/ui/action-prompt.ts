@@ -1,5 +1,7 @@
 import {
   getSelectListTheme,
+  keyHint,
+  rawKeyHint,
   type ExtensionUIContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -35,6 +37,7 @@ export type PromptForActionOptions<T extends string> = {
   title: string;
   detail?: string;
   choices: readonly ActionPromptChoice<T>[];
+  initialValue?: T;
 };
 
 function invalidActionText(value: string, limit: number): boolean {
@@ -77,6 +80,9 @@ export function validateActionPrompt<T extends string>(
     }
     labels.add(choice.label);
     values.add(choice.value);
+  }
+  if (options.initialValue !== undefined && !values.has(options.initialValue)) {
+    throw new TypeError("Action prompt initial value must match a choice");
   }
 }
 
@@ -122,10 +128,14 @@ class ActionPromptComponent implements Component {
     private readonly list: SelectList,
     private readonly itemCount: number,
     private readonly pageSize: number,
+    initialIndex: number,
     private readonly tui: Pick<TUI, "requestRender">,
     private readonly keybindings: Pick<KeybindingsManager, "matches">,
     private readonly onDispose: () => void,
-  ) {}
+  ) {
+    this.#selectedIndex = initialIndex;
+    this.list.setSelectedIndex(initialIndex);
+  }
 
   render(width: number): string[] {
     return this.panel.render(width);
@@ -211,6 +221,12 @@ export async function promptForAction<T extends string>(
           description: choice.description,
         }));
         const pageSize = Math.min(items.length, 10);
+        const initialIndex = Math.max(
+          0,
+          options.choices.findIndex(
+            (choice) => choice.value === options.initialValue,
+          ),
+        );
         const list = new SelectList(items, pageSize, getSelectListTheme());
         list.onSelect = (item) => {
           settle({ kind: "selected", value: item.value as T });
@@ -224,11 +240,16 @@ export async function promptForAction<T extends string>(
             theme,
             title: options.title,
             child: content,
-            footer: "↑↓ navigate · enter select · esc cancel",
+            footer: new Text(
+              `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "cancel")}`,
+              0,
+              0,
+            ),
           }),
           list,
           items.length,
           pageSize,
+          initialIndex,
           tui,
           keybindings,
           () => settle({ kind: "aborted" }),

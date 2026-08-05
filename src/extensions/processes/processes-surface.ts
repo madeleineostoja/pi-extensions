@@ -1,6 +1,9 @@
-import type {
-  ExtensionCommandContext,
-  Theme,
+import {
+  keyHint,
+  rawKeyHint,
+  type ExtensionCommandContext,
+  type KeybindingsManager,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
@@ -31,8 +34,8 @@ export async function showProcessesSurface(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   await ctx.ui.custom<void>(
-    (tui, theme, _keys, done) =>
-      new ProcessesSurface(runtime, ctx, tui, theme, done),
+    (tui, theme, keys, done) =>
+      new ProcessesSurface(runtime, ctx, tui, theme, done, keys),
   );
 }
 
@@ -66,6 +69,7 @@ export class ProcessesSurface implements Component {
     private readonly tui: TUI,
     private readonly theme: Theme,
     private readonly done: () => void,
+    private readonly keybindings?: Pick<KeybindingsManager, "matches">,
   ) {
     this.#roster = this.#replaceRoster(undefined, 0);
     this.#unsubscribe = runtime.subscribe(() => this.#scheduleRefresh());
@@ -82,7 +86,10 @@ export class ProcessesSurface implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "q")) {
+    if (
+      this.keybindings?.matches(data, "tui.select.cancel") ??
+      matchesKey(data, "escape")
+    ) {
       if (this.#mode === "output") {
         this.#mode = "landing";
         this.#outputScroll = undefined;
@@ -95,7 +102,15 @@ export class ProcessesSurface implements Component {
       return;
     }
     if (this.#mode === "output") {
-      this.#outputScroll?.handleInput(data, { homeEnd: true });
+      const up =
+        this.keybindings?.matches(data, "tui.select.up") ??
+        matchesKey(data, "up");
+      const down =
+        this.keybindings?.matches(data, "tui.select.down") ??
+        matchesKey(data, "down");
+      this.#outputScroll?.handleInput(up ? "\x1b[A" : down ? "\x1b[B" : data, {
+        homeEnd: true,
+      });
       this.tui.requestRender();
       return;
     }
@@ -113,7 +128,19 @@ export class ProcessesSurface implements Component {
         : this.#mode === "landing"
           ? { title: "Process", child: this.#landingComponent() }
           : { title: "Process output", child: this.#outputComponent() };
-    return new Panel({ theme: this.theme, ...options }).render(width);
+    return new Panel({
+      theme: this.theme,
+      ...options,
+      footer: this.#footer(),
+    }).render(width);
+  }
+
+  #footer(): Component {
+    const hints =
+      this.#mode === "output"
+        ? `${rawKeyHint("↑↓", "scroll")}  ${keyHint("tui.select.cancel", "back")}`
+        : `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", this.#mode === "roster" ? "close" : "back")}`;
+    return { render: () => [hints], invalidate() {} };
   }
 
   #entries(): Entry[] {
@@ -156,6 +183,11 @@ export class ProcessesSurface implements Component {
       entries: grouped,
       maxVisible: 12,
       selectedPrefix: (text) => this.theme.fg("accent", text),
+      keybindings: this.keybindings,
+      empty: {
+        text: "No managed processes.",
+        style: (text) => this.theme.fg("muted", text),
+      },
       onSelect: (item) => {
         const index = this.#rosterEntries.findIndex(
           (entry) => entry.id === item.value,
@@ -232,6 +264,7 @@ export class ProcessesSurface implements Component {
       })),
       maxVisible: 4,
       selectedPrefix: (text) => this.theme.fg("accent", text),
+      keybindings: this.keybindings,
       onSelect: (item) => void this.#action(item.data),
     });
     this.#actions.setSelectedValue(selected, 0);
