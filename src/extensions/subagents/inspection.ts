@@ -249,16 +249,22 @@ export function projectFinalInspectionRecord(
   } catch {
     return undefined;
   }
-  const text = serialized.replace(/\p{C}/gu, " ").trim();
+  const text = sanitizeMarkdown(serialized).trim();
   if (!text) {
     return undefined;
   }
   return {
     kind: "message",
     role: "final",
-    text: truncateUtf8(text),
+    text,
     ...(timestamp === undefined ? {} : { timestamp }),
   };
+}
+
+function sanitizeMarkdown(value: string): string {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\p{C}/gu, (character) => (character === "\n" ? "\n" : " "));
 }
 
 export function projectMessages(messages: readonly unknown[]): {

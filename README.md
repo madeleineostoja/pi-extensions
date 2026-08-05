@@ -87,7 +87,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 | `/sandbox [on\|off]`  | Inspect or change Sandbox mode for the current session         |
 | `/readonly [on\|off]` | Inspect or change confirmation for `edit` and `write`          |
 | `/processes`          | Inspect and stop current-session managed processes             |
-| `/agents`             | Inspect, steer, summarize, or stop managed agents              |
+| `/agents`             | Inspect activity/results, guide, or stop managed agents        |
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs         |
 | `/papercuts`          | Browse and close recorded Papercut findings                    |
 | `/btw <question>`     | Ask an ephemeral side question without changing the transcript |

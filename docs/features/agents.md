@@ -64,13 +64,11 @@ In the TUI, Escape during foreground work asks for confirmation before aborting 
 
 ## `/agents`
 
-The dashboard can:
+The dashboard presents a scannable Active/Retained roster with hierarchy, current description, and elapsed time. Selecting an agent opens a landing page with status, elapsed time, available context and cost, and a bounded failure reason when relevant. From there you can view Activity, view a completed Result, stop running work with confirmation, or return to the roster.
 
-- show active agents or include retained terminal records;
-- inspect type, owner, cwd, requested model and thinking, timestamps, status, and session health;
-- display bounded activity and sanitized message previews;
-- queue guidance or request a point-in-time summary; and
-- stop active work with confirmation.
+Activity is a full-width chronological timeline: assistant prose is rendered as Markdown; tool calls are compact summaries with bounded arguments and status; steering is quoted; and retry and compaction events remain visible. It never replays complete tool output. Steerable agents have an inline bordered guidance editor beneath the timeline: type normally, use Enter to send and Shift+Enter for a new line; arrows scroll the timeline. Escape returns to the landing page.
+
+A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result.
 
 The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Foreground failures remain in their ordinary tool row; a detached public background failure is notified once and remains inspectable in `/agents`, which is the complete inspector including Implement-managed workers and retained records.
 

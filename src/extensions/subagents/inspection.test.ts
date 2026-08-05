@@ -115,9 +115,10 @@ describe("public progress projection", () => {
 });
 
 describe("inspection projection", () => {
-  it("projects bounded structured managed results as final records", () => {
+  it("keeps complete sanitized managed results as final records", () => {
+    const summary = `# Heading\r\n\r\n- item\r\n\r\n\`\`\`ts\r\nconst value = 1;\r\n\`\`\`\u001b${"x".repeat(3_000)}`;
     const record = projectFinalInspectionRecord(
-      { summary: `done\u001b${"x".repeat(3_000)}` },
+      summary,
       "2024-01-01T00:00:00.000Z",
     );
 
@@ -126,12 +127,12 @@ describe("inspection projection", () => {
       role: "final",
       timestamp: "2024-01-01T00:00:00.000Z",
     });
-    expect(record?.kind === "message" ? record.text : "").not.toContain(
-      "\u001b",
+    const text = record?.kind === "message" ? record.text : "";
+    expect(text).not.toContain("\u001b");
+    expect(text).toContain(
+      "# Heading\n\n- item\n\n```ts\nconst value = 1;\n```",
     );
-    expect(
-      Buffer.byteLength(record?.kind === "message" ? record.text : ""),
-    ).toBeLessThanOrEqual(2048);
+    expect(text).toContain("x".repeat(3_000));
   });
 
   it("retains only structured sanitized arguments needed for historical rendering", () => {

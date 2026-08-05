@@ -15,7 +15,7 @@ import type {
 const down = "\x1b[B";
 const enter = "\r";
 const escape = "\x1b";
-const tab = "\t";
+const end = "\x1b[F";
 const ansiPattern = new RegExp(
   `${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`,
   "g",
@@ -29,8 +29,8 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     key: "runtime:agent-1",
     status: "running",
     owner: "public-tool",
-    type: "Worker",
-    description: "first agent",
+    type: "Explore",
+    description: "trace renderer ownership",
     cwd: "/repo",
     extensionBinding: "bound",
     canSteer: true,
@@ -61,34 +61,18 @@ function inspectionFor(
 }
 
 class FakeRuntime {
-  readonly scope: string;
-  items: RuntimeSnapshot[];
-  inspectionFactory: (value: RuntimeSnapshot) => RuntimeInspection;
   listeners = new Set<() => void>();
   unsubscribe = vi.fn();
   steer = vi.fn(async () => undefined);
   stop = vi.fn();
-  summarise = vi.fn(
-    async (
-      _id: string,
-      _model: unknown,
-      _auth: unknown,
-      _deps: unknown,
-      _signal?: AbortSignal,
-    ) => ({ ok: true as const, text: "summary" }),
-  );
 
   constructor(
-    scope: string,
-    items: RuntimeSnapshot[],
-    inspectionFactory: (
+    readonly scope: string,
+    public items: RuntimeSnapshot[],
+    public inspectionFactory: (
       value: RuntimeSnapshot,
     ) => RuntimeInspection = inspectionFor,
-  ) {
-    this.scope = scope;
-    this.items = items;
-    this.inspectionFactory = inspectionFactory;
-  }
+  ) {}
 
   snapshots(): RuntimeSnapshot[] {
     return this.items;
@@ -118,70 +102,29 @@ class FakeRuntime {
   }
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function fixture(
   runtimes: FakeRuntime[],
-  options: {
-    input?: () => Promise<string | undefined>;
-    confirm?: () => Promise<boolean>;
-    auth?: () => Promise<
-      | { ok: true; apiKey: string; headers: {}; env: {} }
-      | { ok: false; error: string }
-    >;
-  } = {},
+  confirm: () => Promise<boolean> = async () => false,
 ) {
-  let themeMark = "\x1b[31m";
   const theme = {
     fg: (_color: string, text: string) => text,
     bg: (_color: string, text: string) => text,
-    bold: (text: string) => `${themeMark}${text}\x1b[0m`,
+    bold: (text: string) => text,
     italic: (text: string) => text,
     strikethrough: (text: string) => text,
   } as unknown as Theme;
   const requestRender = vi.fn();
   const done = vi.fn();
   const notify = vi.fn();
-  const input = vi.fn(options.input ?? (async () => undefined));
-  const confirm = vi.fn(options.confirm ?? (async () => false));
-  const getApiKeyAndHeaders = vi.fn(
-    options.auth ??
-      (async () => ({
-        ok: true as const,
-        apiKey: "key",
-        headers: {},
-        env: {},
-      })),
-  );
-  const ctx = {
-    model: { id: "model", provider: "provider", input: ["text"] },
-    modelRegistry: { getApiKeyAndHeaders },
-    ui: { notify, input, confirm },
-  } as unknown as ExtensionCommandContext;
+  const ctx = { ui: { notify, confirm } } as unknown as ExtensionCommandContext;
   const surface = new AgentsSurface(
     runtimes as unknown as SubagentRuntime[],
     ctx,
-    { requestRender } as never,
+    { requestRender, terminal: { rows: 40 } } as never,
     theme,
     done,
   );
-  return {
-    surface,
-    requestRender,
-    done,
-    notify,
-    input,
-    confirm,
-    setThemeMark: (value: string) => {
-      themeMark = value;
-    },
-  };
+  return { surface, requestRender, done, notify };
 }
 
 function rendered(surface: AgentsSurface, width = 120): string {
@@ -196,367 +139,201 @@ function selectedLine(surface: AgentsSurface): string {
   return (
     plain(rendered(surface))
       .split("\n")
-      .find((line) => line.includes("→")) ?? ""
+      .find((line) => line.includes("›")) ?? ""
   );
 }
 
-async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
-describe("AgentsSurface roster", () => {
-  it("labels retained-only rosters truthfully and preserves generic depth with each descendant's status", () => {
-    const retained = new FakeRuntime("retained", [
+describe("AgentsSurface roster and landing", () => {
+  it("renders headerless groups with aligned nested rows, right durations, and no hidden Implement workers", () => {
+    const runtime = new FakeRuntime("runtime", [
+      snapshot({ id: "parent", key: "runtime:parent", description: "parent" }),
+      snapshot({
+        id: "child",
+        key: "runtime:child",
+        owner: { kind: "nested", parentId: "parent", tool: "explore" },
+        description: "child",
+      }),
+      snapshot({
+        id: "hidden",
+        key: "runtime:hidden",
+        owner: { kind: "pipkin:implement", runId: "run", role: "implementer" },
+        rosterVisibility: "hide",
+        description: "hidden worker",
+      }),
       snapshot({
         id: "done",
-        key: "retained:done",
+        key: "runtime:done",
         status: "completed",
-        description: "retained only",
+        canSteer: false,
+        description: "retained",
       }),
     ]);
-    const retainedSurface = fixture([retained]).surface;
+    const text = plain(rendered(fixture([runtime]).surface, 100));
 
-    expect(plain(rendered(retainedSurface))).toContain("Retained · ✓ Worker");
-    expect(plain(rendered(retainedSurface))).not.toContain("Active · ✓ Worker");
-
-    const parent = snapshot({
-      id: "parent",
-      key: "tree:parent",
-      description: "parent",
-    });
-    const child = snapshot({
-      id: "child",
-      key: "tree:child",
-      status: "completed",
-      owner: { kind: "nested", parentId: "parent", tool: "explore" },
-      description: "settled child",
-    });
-    const grandchild = snapshot({
-      id: "grandchild",
-      key: "tree:grandchild",
-      owner: { kind: "nested", parentId: "child", tool: "explore" },
-      description: "active grandchild",
-    });
-    const unrelated = snapshot({
-      id: "other",
-      key: "tree:other",
-      description: "unrelated",
-    });
-    const treeSurface = fixture([
-      new FakeRuntime("tree", [parent, unrelated, child, grandchild]),
-    ]).surface;
-    const text = plain(rendered(treeSurface));
-
-    expect(text.indexOf("parent")).toBeLessThan(text.indexOf("settled child"));
-    expect(text.indexOf("settled child")).toBeLessThan(
-      text.indexOf("active grand"),
-    );
-    expect(text.indexOf("active grand")).toBeLessThan(
-      text.indexOf("unrelated"),
-    );
-    expect(text).toContain("  ↳ ✓ Worker · settled child");
-    expect(text).toContain("    ↳ ● Worker · active grand");
-    expect(text).not.toContain("Retained ·   ↳ ✓ Worker");
+    expect(text).toContain("Active");
+    expect(text).toContain("Retained");
+    expect(text).not.toContain("Active ·");
+    expect(text).not.toContain("hidden worker");
+    const parent = text.split("\n").find((line) => line.includes("parent"))!;
+    const child = text.split("\n").find((line) => line.includes("child"))!;
+    expect(parent.indexOf("Explore")).toBe(child.indexOf("Explore"));
+    expect(parent).toMatch(/\d/);
+    expect(child).toMatch(/\d/);
   });
 
-  it("keeps stable roster values and falls back to the nearest old position on roster and inspector loss", () => {
+  it("keeps a stable roster selection and falls back safely when the selected record disappears", () => {
     const runtime = new FakeRuntime("runtime", [
       snapshot({ id: "a", key: "runtime:a", description: "first" }),
       snapshot({ id: "b", key: "runtime:b", description: "second" }),
       snapshot({ id: "c", key: "runtime:c", description: "third" }),
     ]);
-    const rosterFixture = fixture([runtime]);
-    rosterFixture.surface.handleInput(down);
+    const { surface, notify } = fixture([runtime]);
+    surface.handleInput(down);
     runtime.items = runtime.items.filter((item) => item.id !== "b");
     runtime.emit();
 
-    expect(selectedLine(rosterFixture.surface)).toContain("● Worker · third");
-    expect(rosterFixture.notify).toHaveBeenCalledTimes(1);
-
-    const inspectorRuntime = new FakeRuntime("runtime", [
-      snapshot({ id: "a", key: "runtime:a", description: "first" }),
-      snapshot({ id: "b", key: "runtime:b", description: "second" }),
-      snapshot({ id: "c", key: "runtime:c", description: "third" }),
-    ]);
-    const inspectorFixture = fixture([inspectorRuntime]);
-    inspectorFixture.surface.handleInput(down);
-    inspectorFixture.surface.handleInput(enter);
-    inspectorRuntime.items = inspectorRuntime.items.filter(
-      (item) => item.id !== "b",
-    );
-    inspectorRuntime.emit();
-
-    const text = plain(rendered(inspectorFixture.surface));
-    expect(text).toContain("Agents");
-    expect(selectedLine(inspectorFixture.surface)).toContain(
-      "● Worker · third",
-    );
-    expect(inspectorFixture.notify).toHaveBeenCalledTimes(1);
+    expect(selectedLine(surface)).toContain("third");
+    expect(notify).toHaveBeenCalledOnce();
   });
 
-  it("renders every exhaustive Implement role without grouping workers", () => {
-    const runtime = new FakeRuntime(
-      "implement",
-      (["planner", "implementer", "reviewer"] as const).map((role) =>
-        snapshot({
-          id: role,
-          key: `implement:${role}`,
-          owner: { kind: "pipkin:implement", runId: "run", role },
-          description: `${role} assignment`,
-          rosterVisibility: "hide",
-        }),
-      ),
-    );
-
-    const text = rendered(fixture([runtime]).surface);
-    expect(text).toContain("Implement: Planner");
-    expect(text).toContain("Implement: Implementer");
-    expect(text).toContain("Implement: Reviewer");
-  });
-});
-
-describe("AgentsSurface inspector state", () => {
-  it("updates live content while preserving action values and chooses the nearest action when membership disappears", () => {
-    let transcript = "initial output";
-    const runtime = new FakeRuntime("runtime", [snapshot()], (current) =>
-      inspectionFor(current, {
-        records: [{ kind: "message", role: "assistant", text: transcript }],
-      }),
+  it("uses only approved landing facts and actions", () => {
+    const current = snapshot({
+      health: {
+        contextUsage: { tokens: 82_000, contextWindow: 100_000, percent: 82 },
+        estimatedCost: 0.04,
+      },
+    });
+    const runtime = new FakeRuntime("runtime", [current], (value) =>
+      inspectionFor(value, { omittedActivity: 1 }),
     );
     const { surface } = fixture([runtime]);
     surface.handleInput(enter);
-    surface.handleInput(down);
-    transcript = "streamed output";
-    runtime.items = [
-      snapshot({
-        health: { turns: 2 },
-        timestamps: {
-          queuedAt: "2024-01-01T00:00:00.000Z",
-          startedAt: "2024-01-01T00:00:01.000Z",
-          updatedAt: "2024-01-01T00:00:02.000Z",
-        },
-      }),
-    ];
-    runtime.emit();
+    const text = plain(rendered(surface));
 
-    expect(selectedLine(surface)).toContain("Summarise activity");
-    expect(rendered(surface)).toContain("streamed output");
-
-    surface.handleInput(down);
-    surface.handleInput(down);
-    runtime.items = [
-      snapshot({
-        status: "completed",
-        canSteer: false,
-        timestamps: {
-          queuedAt: "2024-01-01T00:00:00.000Z",
-          startedAt: "2024-01-01T00:00:01.000Z",
-          completedAt: "2024-01-01T00:00:03.000Z",
-          updatedAt: "2024-01-01T00:00:03.000Z",
-        },
-      }),
-    ];
-    runtime.emit();
-
-    expect(selectedLine(surface)).toContain("Back");
-  });
-
-  it("guards guidance and stop dialogs by inspector generation even after re-entering the same agent", async () => {
-    const guidance = deferred<string | undefined>();
-    const confirmation = deferred<boolean>();
-    const runtime = new FakeRuntime("runtime", [snapshot()]);
-    const { surface } = fixture([runtime], {
-      input: () => guidance.promise,
-      confirm: () => confirmation.promise,
-    });
-
-    surface.handleInput(enter);
-    surface.handleInput(down);
-    surface.handleInput(down);
-    surface.handleInput(enter);
-    await flush();
-    surface.handleInput(escape);
-    surface.handleInput(enter);
-    guidance.resolve("new direction");
-    await flush();
-    expect(runtime.steer).not.toHaveBeenCalled();
-
-    surface.handleInput(down);
-    surface.handleInput(down);
-    surface.handleInput(down);
-    surface.handleInput(enter);
-    await flush();
-    surface.handleInput(escape);
-    surface.handleInput(enter);
-    confirmation.resolve(true);
-    await flush();
-    expect(runtime.stop).not.toHaveBeenCalled();
-  });
-
-  it("renders summary success and bounded authentication failure", async () => {
-    const successRuntime = new FakeRuntime("runtime", [snapshot()]);
-    successRuntime.summarise.mockResolvedValue({
-      ok: true,
-      text: "focused summary",
-    });
-    const success = fixture([successRuntime]);
-    success.surface.handleInput(enter);
-    success.surface.handleInput(down);
-    success.surface.handleInput(enter);
-    await flush();
-    expect(plain(rendered(success.surface))).toContain(
-      "Summary: focused summary",
-    );
-
-    const failedRuntime = new FakeRuntime("runtime", [snapshot()]);
-    const failed = fixture([failedRuntime], {
-      auth: async () => ({ ok: false, error: "credentials unavailable" }),
-    });
-    failed.surface.handleInput(enter);
-    failed.surface.handleInput(down);
-    failed.surface.handleInput(enter);
-    await flush();
-    expect(plain(rendered(failed.surface))).toContain(
-      "Summary: credentials unavailable",
-    );
-    expect(failedRuntime.summarise).not.toHaveBeenCalled();
-  });
-
-  it("warns rather than redirecting guidance when eligibility changes during its dialog", async () => {
-    const guidance = deferred<string | undefined>();
-    const runtime = new FakeRuntime("runtime", [snapshot()]);
-    const { surface, notify } = fixture([runtime], {
-      input: () => guidance.promise,
-    });
-    surface.handleInput(enter);
-    surface.handleInput(down);
-    surface.handleInput(down);
-    surface.handleInput(enter);
-    await flush();
-    runtime.items = [
-      snapshot({
-        status: "completed",
-        canSteer: false,
-        timestamps: {
-          queuedAt: "2024-01-01T00:00:00.000Z",
-          completedAt: "2024-01-01T00:00:03.000Z",
-          updatedAt: "2024-01-01T00:00:03.000Z",
-        },
-      }),
-    ];
-    runtime.emit();
-    guidance.resolve("late guidance");
-    await flush();
-
-    expect(runtime.steer).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      "Guidance was not delivered; agent state changed.",
-      "warning",
-    );
-    expect(plain(rendered(surface))).toContain("Agent inspector");
-  });
-
-  it("does not apply summary completion or request renders after navigation", async () => {
-    const summary = deferred<{ ok: true; text: string }>();
-    const runtime = new FakeRuntime("runtime", [snapshot()]);
-    runtime.summarise.mockImplementation(async () => summary.promise);
-    const { surface, requestRender } = fixture([runtime]);
-
-    surface.handleInput(enter);
-    surface.handleInput(down);
-    surface.handleInput(enter);
-    await flush();
-    expect(rendered(surface)).toContain("Summary: loading…");
-    surface.handleInput(escape);
-    const rendersAfterBack = requestRender.mock.calls.length;
-    summary.resolve({ ok: true, text: "stale summary" });
-    await flush();
-
-    expect(rendered(surface)).not.toContain("stale summary");
-    expect(requestRender).toHaveBeenCalledTimes(rendersAfterBack);
+    expect(text).toMatch(/running · .+ · 82k context · \$0\.04/);
+    expect(text).toContain("View activity");
+    expect(text).toContain("Stop agent");
+    expect(text).toContain("Back");
+    expect(text).not.toMatch(/Details|Summaris|Model:|Tab:/);
+    expect(text).not.toContain("Earlier activity is retained");
   });
 });
 
-describe("AgentsSurface retained transcript", () => {
-  it("renders chronological native and neutral records, keeps final distinct, and expands the same visible tool key", () => {
+describe("AgentsSurface activity and result", () => {
+  it("renders lightweight chronological activity, keeps final result separate, and scrolls it", () => {
+    const fullResult = `# Complete result\n\n- delivered\n\n\`\`\`ts\nconst complete = true;\n\`\`\`\n\n${"complete ".repeat(600)}`;
     const current = snapshot({ status: "completed", canSteer: false });
     const records: RuntimeInspection["records"] = [
       {
         kind: "message",
-        role: "user",
-        text: "begin transcript",
-        timestamp: "2024-01-01T00:00:01.000Z",
-      },
-      {
-        kind: "message",
         role: "assistant",
-        text: "**assistant step**",
-        timestamp: "2024-01-01T00:00:02.000Z",
+        text: "I am tracing the renderer.",
       },
       {
         kind: "tool",
-        toolCallId: "read-1",
+        toolCallId: "read",
         toolName: "read",
         status: "completed",
         arguments: { path: "src/a.ts", offset: 2, limit: 3 },
-        result: "EXPANDED READ OUTPUT",
-        timestamp: "2024-01-01T00:00:03.000Z",
       },
       {
         kind: "tool",
-        toolCallId: "grep-1",
-        toolName: "grep",
-        status: "completed",
-        arguments: { pattern: "needle", path: "src" },
-        result: "src/a.ts:1: needle",
-        timestamp: "2024-01-01T00:00:04.000Z",
-      },
-      {
-        kind: "tool",
-        toolCallId: "find-1",
-        toolName: "find",
-        status: "completed",
-        arguments: { pattern: "*.ts", path: "src" },
-        result: "src/a.ts",
-        timestamp: "2024-01-01T00:00:05.000Z",
-      },
-      {
-        kind: "tool",
-        toolCallId: "bash-1",
+        toolCallId: "bash",
         toolName: "bash",
-        status: "completed",
-        arguments: { command: "npm test", timeout: 30 },
-        result: "tests passed",
-        timestamp: "2024-01-01T00:00:06.000Z",
-      },
-      {
-        kind: "tool",
-        toolCallId: "edit-1",
-        toolName: "edit",
-        status: "completed",
-        arguments: { path: "src/a.ts" },
-        timestamp: "2024-01-01T00:00:07.000Z",
-      },
-      {
-        kind: "tool",
-        toolCallId: "custom-1",
-        toolName: "custom",
         status: "failed",
-        error: "custom failure",
-        timestamp: "2024-01-01T00:00:08.000Z",
+        arguments: { command: "npm test" },
+        error: "test failed",
       },
       {
         kind: "steering",
         status: "delivered",
-        text: "focus tests",
-        timestamp: "2024-01-01T00:00:09.000Z",
+        text: "focus the test",
+        timestamp: "2024-01-01T00:00:00.500Z",
       },
       {
-        kind: "message",
-        role: "final",
-        text: "done distinctly",
-        timestamp: "2024-01-01T00:00:10.000Z",
+        kind: "retry",
+        status: "scheduled",
+        error: "rate limited",
+        timestamp: "2024-01-01T00:00:01.000Z",
+      },
+      {
+        kind: "compaction",
+        status: "completed",
+        reason: "threshold",
+        timestamp: "2024-01-01T00:00:02.000Z",
+      },
+      { kind: "message", role: "final", text: fullResult },
+    ];
+    const runtime = new FakeRuntime("runtime", [current], (value) =>
+      inspectionFor(value, {
+        records,
+        activity: records.filter(
+          (record): record is RuntimeInspection["activity"][number] =>
+            record.kind !== "message",
+        ),
+      }),
+    );
+    const { surface } = fixture([runtime]);
+    surface.handleInput(enter);
+    surface.handleInput(enter);
+    const activity = plain(rendered(surface));
+
+    expect(activity).toContain("I am tracing the renderer.");
+    expect(activity).toContain("read  src/a.ts · lines 2–3 · completed");
+    expect(activity).toContain("test failed");
+    expect(activity).toContain("> focus the test");
+    expect(activity).toContain("Retry scheduled");
+    expect(activity).toContain("Compaction completed");
+    expect(activity).not.toContain("Complete result");
+    expect(activity).not.toContain("EXPANDED");
+
+    surface.handleInput(escape);
+    surface.handleInput(down);
+    surface.handleInput(enter);
+    expect(plain(rendered(surface))).toContain("Complete result");
+    expect(plain(rendered(surface))).toContain("const complete = true;");
+    surface.handleInput(end);
+    expect(plain(rendered(surface))).toContain("complete complete");
+  });
+
+  it("scrolls Activity while keeping ordinary q input in guidance and Escape returns", () => {
+    const current = snapshot();
+    const records: RuntimeInspection["records"] = Array.from(
+      { length: 30 },
+      (_, index) => ({
+        kind: "message" as const,
+        role: "assistant" as const,
+        text: `activity ${index}`,
+      }),
+    );
+    const runtime = new FakeRuntime("runtime", [current], (value) =>
+      inspectionFor(value, { records }),
+    );
+    const { surface } = fixture([runtime]);
+    surface.handleInput(enter);
+    surface.handleInput(enter);
+    const beforeScroll = plain(rendered(surface));
+
+    surface.handleInput(down);
+    expect(plain(rendered(surface))).not.toBe(beforeScroll);
+    surface.handleInput("q");
+    expect(plain(rendered(surface))).toContain("Agent activity · Explore");
+    expect(plain(rendered(surface))).toContain("q");
+
+    surface.handleInput(escape);
+    expect(plain(rendered(surface))).toContain("Agent · Explore");
+  });
+
+  it("keeps multiline tool summaries on one safe row", () => {
+    const current = snapshot({ status: "completed", canSteer: false });
+    const records: RuntimeInspection["records"] = [
+      {
+        kind: "tool",
+        toolCallId: "bash",
+        toolName: "bash",
+        status: "failed",
+        arguments: { command: "npm test\n-- --run [31mfocused" },
+        error: "command failed\nwithout replaying output",
       },
     ];
     const runtime = new FakeRuntime("runtime", [current], (value) =>
@@ -566,99 +343,65 @@ describe("AgentsSurface retained transcript", () => {
           (record): record is RuntimeInspection["activity"][number] =>
             record.kind !== "message",
         ),
-        omittedMessages: 1,
-        compactedHistory: true,
       }),
     );
-    const { surface, requestRender } = fixture([runtime]);
+    const { surface } = fixture([runtime]);
     surface.handleInput(enter);
+    surface.handleInput(enter);
+    const activity = rendered(surface, 46);
+    const toolRow = activity.split("\n").find((line) => line.includes("bash"));
 
-    const collapsed = plain(rendered(surface, 140));
-    expect(collapsed).toContain("begin transcript");
-    expect(collapsed).toContain("assistant step");
-    expect(collapsed).toContain("read");
-    expect(collapsed).toContain("src/a.ts");
-    expect(collapsed).toContain("grep");
-    expect(collapsed).toContain("needle");
-    expect(collapsed).toContain("find");
-    expect(collapsed).toContain("*.ts");
-    expect(collapsed).toContain("npm test");
-    expect(collapsed).not.toContain("EXPANDED READ OUTPUT");
-    expect(collapsed.indexOf("begin transcript")).toBeLessThan(
-      collapsed.indexOf("assistant step"),
-    );
-    expect(collapsed.indexOf("assistant step")).toBeLessThan(
-      collapsed.indexOf("read"),
-    );
-    const beforeRepeatedRender = requestRender.mock.calls.length;
-    surface.render(140);
-    surface.render(100);
-    expect(requestRender).toHaveBeenCalledTimes(beforeRepeatedRender);
+    expect(activity).toContain("npm test -- --run");
+    expect(activity).not.toContain("npm test\n-- --run");
+    expect(plain(activity)).not.toContain("");
+    expect(toolRow).toContain("bash");
+    expect(toolRow).toContain("· failed");
+    expect(visibleWidth(toolRow ?? "")).toBeLessThanOrEqual(46);
+    expect(
+      activity.split("\n").filter((line) => line.includes("command failed")),
+    ).toHaveLength(1);
+  });
 
-    surface.handleInput(tab);
-    surface.handleInput("e");
-    expect(plain(rendered(surface, 140))).toContain("EXPANDED READ OUTPUT");
+  it("edits and sends inline guidance only while the same agent remains steerable", async () => {
+    const runtime = new FakeRuntime("runtime", [snapshot()]);
+    const { surface, notify } = fixture([runtime]);
+    surface.handleInput(enter);
+    surface.handleInput(enter);
+    rendered(surface);
+    surface.handleInput("first direction");
+    expect(plain(rendered(surface))).toContain("first direction");
+    surface.handleInput("\x1b[13;2u");
+    surface.handleInput("second line");
+    surface.handleInput(enter);
+    await Promise.resolve();
+    expect(runtime.steer).toHaveBeenCalledWith(
+      "agent-1",
+      "first direction\nsecond line",
+    );
+
+    surface.handleInput("late direction");
+    runtime.items = [snapshot({ status: "completed", canSteer: false })];
     runtime.emit();
-    expect(plain(rendered(surface, 140))).toContain("EXPANDED READ OUTPUT");
-    surface.handleInput("e");
-    expect(plain(rendered(surface, 140))).not.toContain("EXPANDED READ OUTPUT");
-
-    for (let index = 0; index < 12; index += 1) {
-      surface.handleInput(down);
-    }
-    const lower = plain(rendered(surface, 140));
-    expect(lower).toContain("Tool edit: completed · body omitted");
-    expect(lower).toContain("Tool custom: failed · native replay unavailable");
-    expect(lower).toContain("Guidance delivered: focus tests");
-    expect(lower).toContain("Final: done distinctly");
-    expect(lower).toContain("Retention: 1 records omitted · compacted history");
-    expect(lower.indexOf("Guidance delivered")).toBeLessThan(
-      lower.indexOf("Final: done distinctly"),
+    surface.handleInput(enter);
+    await Promise.resolve();
+    expect(runtime.steer).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalledWith(
+      expect.stringContaining("delivered"),
+      "warning",
     );
   });
 
-  it("keeps all lines width-safe and re-evaluates themed content after invalidation", () => {
+  it("keeps rendering width-safe and cleans subscriptions exactly once", () => {
     const runtime = new FakeRuntime("runtime", [snapshot()]);
-    const { surface, requestRender, setThemeMark } = fixture([runtime]);
-
-    expect(plain(rendered(surface))).toContain("Active · ● Worker · first age");
+    const { surface, done } = fixture([runtime]);
     for (const width of [1, 8, 24, 60]) {
       expect(
         surface.render(width).every((line) => visibleWidth(line) <= width),
       ).toBe(true);
     }
-    const rendersBeforeInvalidation = requestRender.mock.calls.length;
-    setThemeMark("\x1b[32m");
-    surface.invalidate();
-    expect(rendered(surface)).toContain("\x1b[32m");
-    expect(requestRender).toHaveBeenCalledTimes(rendersBeforeInvalidation);
-  });
-
-  it("disposes subscriptions, pending summaries, and completion exactly once", async () => {
-    const summary = deferred<{ ok: true; text: string }>();
-    let summarySignal: AbortSignal | undefined;
-    const runtime = new FakeRuntime("runtime", [snapshot()]);
-    runtime.summarise.mockImplementation(
-      async (_id, _model, _auth, _deps, signal) => {
-        summarySignal = signal;
-        return summary.promise;
-      },
-    );
-    const { surface, done, requestRender } = fixture([runtime]);
-    surface.handleInput(enter);
-    surface.handleInput(down);
-    surface.handleInput(enter);
-    await flush();
-
     surface.dispose();
     surface.dispose();
-    expect(summarySignal?.aborted).toBe(true);
-    expect(runtime.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(done).toHaveBeenCalledTimes(1);
-    const renderCount = requestRender.mock.calls.length;
-    runtime.emit();
-    summary.resolve({ ok: true, text: "late" });
-    await flush();
-    expect(requestRender).toHaveBeenCalledTimes(renderCount);
+    expect(runtime.unsubscribe).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledOnce();
   });
 });

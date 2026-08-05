@@ -18,7 +18,6 @@ import {
   getSubagentRuntime,
   MANAGED_COMPLETION_TOOL_NAME,
   SubagentRuntime,
-  serializeInspectionForSummary,
 } from "./runtime.js";
 
 type Message = {
@@ -271,6 +270,13 @@ describe("SubagentRuntime", () => {
     expect(completed.timestamps.completedAt).toEqual(expect.any(String));
     expect(runtime.snapshot(queued.id)).toEqual(completed);
     expect(runtime.snapshots()).toEqual([completed]);
+    expect(runtime.inspect(queued.id)?.records).toContainEqual(
+      expect.objectContaining({
+        kind: "message",
+        role: "final",
+        text: '{"text":"done"}',
+      }),
+    );
   });
 
   it("preserves distinct cwd values for trusted managed calls", async () => {
@@ -707,6 +713,39 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("preserves complete Markdown final results in the runtime inspection", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const markdown =
+      "# Heading\r\n\r\n- item\r\n\r\n```ts\r\nconst value = 1;\r\n```\u001b[31m";
+    const session = makeSession(markdown);
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    promptDone.resolve();
+    await runtime.wait(started.id);
+
+    const final = runtime
+      .inspect(started.id)
+      ?.records.find(
+        (record) => record.kind === "message" && record.role === "final",
+      );
+    const text = final?.kind === "message" ? final.text : "";
+    expect(text).toContain(
+      "# Heading\n\n- item\n\n```ts\nconst value = 1;\n```",
+    );
+    expect(text).not.toContain("\u001b");
+  });
+
   it("captures terminal messages and canonical health after abort settles", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
@@ -762,71 +801,6 @@ describe("SubagentRuntime", () => {
       ],
     });
     promptDone.resolve();
-  });
-
-  it("keeps the summary fallback bounded and delimited when metadata is oversized", () => {
-    const serialized = serializeInspectionForSummary({
-      snapshot: {
-        id: "agent",
-        status: "completed",
-        owner: "owner".repeat(30_000),
-        type: "General",
-        description: "summary target",
-        cwd: "/workspace",
-        extensionBinding: "bound",
-        rosterVisibility: "show",
-        timestamps: { queuedAt: "now", updatedAt: "now" },
-      },
-      messages: [],
-      activity: [],
-      records: [],
-      omittedMessages: 0,
-      omittedActivity: 0,
-      compactedHistory: false,
-    });
-
-    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(64 * 1024);
-    expect(serialized).toMatch(/^.+\n<inspection>\n[\s\S]*\n<\/inspection>$/);
-    const payload = serialized.slice(
-      serialized.indexOf("\n<inspection>\n") + "\n<inspection>\n".length,
-      -"\n</inspection>".length,
-    );
-    expect(JSON.parse(payload)).toMatchObject({
-      summaryMetadataTruncated: true,
-    });
-  });
-
-  it("passes resolved auth to summary completion", async () => {
-    const { pi } = fakePi();
-    const runtime = new SubagentRuntime(pi as never);
-    const agent = runtime.queue({
-      owner: "owner",
-      type: "General",
-      description: "summary target",
-      cwd: "/workspace",
-    });
-    const completeSimple = vi.fn(async () => fauxAssistantMessage("summary"));
-
-    await runtime.summarise(
-      agent.id,
-      { provider: "openai-codex", id: "gpt-5.3-codex" } as never,
-      {
-        apiKey: "oauth-token",
-        headers: { "x-test": "header" },
-        env: { TEST_AUTH: "value" },
-      },
-      { completeSimple },
-    );
-
-    expect(completeSimple).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "openai-codex" }),
-      expect.any(Object),
-      expect.objectContaining({
-        apiKey: "oauth-token",
-        headers: { "x-test": "header" },
-        env: { TEST_AUTH: "value" },
-      }),
-    );
   });
 
   it("waits for stop during async session creation before disposing the eventual child", async () => {
