@@ -2,16 +2,19 @@ import {
   ACTIVITY_TEXT_BYTE_LIMIT,
   createActivityPublisher,
   type ActivityPublisher,
-  type ActivityState,
 } from "#ui/activity";
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import type { ProcessSnapshot, ProcessRuntime } from "./runtime.js";
+
+type Notify = (message: string, level: "warning") => void;
 
 export class ProcessActivityProjector {
   #publisher: ActivityPublisher | undefined;
   #unsubscribe: (() => void) | undefined;
   #activityIds = new Map<string, string>();
   #published = new Set<string>();
+  #started = new Set<string>();
+  #notifiedFailures = new Set<string>();
   #nextActivityId = 1;
 
   constructor(
@@ -19,13 +22,13 @@ export class ProcessActivityProjector {
     private readonly events: EventBus,
   ) {}
 
-  start(): void {
+  start(notify?: Notify): void {
     this.dispose();
     this.#publisher = createActivityPublisher(this.events, "processes");
     this.#unsubscribe = this.runtime.subscribe((snapshots) =>
-      this.publish(snapshots),
+      this.publish(snapshots, notify),
     );
-    this.publish(this.runtime.snapshots());
+    this.publish(this.runtime.snapshots(), notify);
   }
 
   dispose(): void {
@@ -35,10 +38,15 @@ export class ProcessActivityProjector {
     this.#publisher = undefined;
     this.#activityIds.clear();
     this.#published.clear();
+    this.#started.clear();
+    this.#notifiedFailures.clear();
     this.#nextActivityId = 1;
   }
 
-  private publish(snapshots: readonly ProcessSnapshot[]): void {
+  private publish(
+    snapshots: readonly ProcessSnapshot[],
+    notify: Notify | undefined,
+  ): void {
     const publisher = this.#publisher;
     if (!publisher) {
       return;
@@ -46,29 +54,49 @@ export class ProcessActivityProjector {
     const processIds = new Set(snapshots.map((snapshot) => snapshot.id));
     const next = new Set<string>();
     for (const processId of this.#published) {
-      const activityId = this.#activityIds.get(processId);
-      if (!processIds.has(processId) && activityId) {
-        publisher.remove(activityId);
+      if (
+        !processIds.has(processId) ||
+        terminal(snapshotFor(snapshots, processId))
+      ) {
+        const activityId = this.#activityIds.get(processId);
+        if (activityId) {
+          publisher.remove(activityId);
+        }
+      }
+    }
+    for (const processId of this.#activityIds.keys()) {
+      if (!processIds.has(processId)) {
         this.#activityIds.delete(processId);
+        this.#started.delete(processId);
+        this.#notifiedFailures.delete(processId);
       }
     }
     for (const snapshot of snapshots) {
-      const activityId = this.#activityId(snapshot.id);
-      next.add(snapshot.id);
-      publisher.upsert({
-        id: activityId,
-        label: "Process",
-        title: bounded(snapshot.description),
-        detail: activityDetail(snapshot.status),
-        state: activityState(snapshot.status),
-        ...(timestamp(snapshot.startedAt) === undefined
-          ? {}
-          : { startedAt: timestamp(snapshot.startedAt) }),
-        updatedAt:
-          timestamp(snapshot.endedAt) ??
-          timestamp(snapshot.startedAt) ??
-          Date.now(),
-      });
+      if (snapshot.status === "running") {
+        this.#started.add(snapshot.id);
+        const activityId = this.#activityId(snapshot.id);
+        next.add(snapshot.id);
+        publisher.upsert({
+          id: activityId,
+          label: "Process",
+          title: bounded(snapshot.description),
+          state: "running",
+          ...(timestamp(snapshot.startedAt) === undefined
+            ? {}
+            : { startedAt: timestamp(snapshot.startedAt) }),
+          updatedAt: timestamp(snapshot.startedAt) ?? Date.now(),
+        });
+      } else if (
+        snapshot.status === "failed" &&
+        this.#started.has(snapshot.id) &&
+        !this.#notifiedFailures.has(snapshot.id)
+      ) {
+        this.#notifiedFailures.add(snapshot.id);
+        notify?.(
+          `Managed process failed: ${bounded(snapshot.description)}`,
+          "warning",
+        );
+      }
     }
     this.#published = next;
   }
@@ -84,24 +112,15 @@ export class ProcessActivityProjector {
   }
 }
 
-function activityState(status: ProcessSnapshot["status"]): ActivityState {
-  return (
-    {
-      running: "running",
-      completed: "completed",
-      failed: "failed",
-      stopped: "stopped",
-    } as const
-  )[status];
+function snapshotFor(
+  snapshots: readonly ProcessSnapshot[],
+  id: string,
+): ProcessSnapshot | undefined {
+  return snapshots.find((snapshot) => snapshot.id === id);
 }
 
-function activityDetail(status: ProcessSnapshot["status"]): string {
-  return {
-    running: "Running",
-    completed: "Completed",
-    failed: "Failed",
-    stopped: "Stopped",
-  }[status];
+function terminal(snapshot: ProcessSnapshot | undefined): boolean {
+  return snapshot !== undefined && snapshot.status !== "running";
 }
 
 function timestamp(value: string | undefined): number | undefined {

@@ -56,7 +56,6 @@ describe("ProcessActivityProjector", () => {
         id: "entry-1",
         label: "Process",
         title: "Build the project",
-        detail: "Running",
         state: "running",
       }),
     ]);
@@ -67,10 +66,7 @@ describe("ProcessActivityProjector", () => {
 
     snapshots = [snapshot("failed")];
     listener?.(snapshots);
-    expect(store.records[0]).toMatchObject({
-      state: "failed",
-      detail: "Failed",
-    });
+    expect(store.records).toEqual([]);
 
     snapshots = [];
     listener?.(snapshots);
@@ -78,5 +74,31 @@ describe("ProcessActivityProjector", () => {
 
     projector.dispose();
     expect(store.records).toEqual([]);
+  });
+
+  it("notifies once for a failure after a process has started", () => {
+    const events = createEventBus();
+    let snapshots = [snapshot("running")];
+    let listener: ((value: readonly ProcessSnapshot[]) => void) | undefined;
+    const runtime = {
+      snapshots: () => snapshots,
+      subscribe: vi.fn((next) => {
+        listener = next;
+        return () => undefined;
+      }),
+    };
+    const notify = vi.fn();
+    const projector = new ProcessActivityProjector(runtime as never, events);
+    projector.start(notify);
+
+    snapshots = [snapshot("failed")];
+    listener?.(snapshots);
+    listener?.(snapshots);
+
+    expect(notify).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith(
+      "Managed process failed: Build the project",
+      "warning",
+    );
   });
 });

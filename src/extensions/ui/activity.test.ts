@@ -21,6 +21,11 @@ const record = (id: string, overrides = {}) => ({
   ...overrides,
 });
 
+const theme = {
+  fg: (_tone: string, text: string) => text,
+  bold: (text: string) => text,
+} as never;
+
 describe("Activity", () => {
   it("isolates replaced and disposed publisher generations", () => {
     const events = createEventBus();
@@ -38,7 +43,7 @@ describe("Activity", () => {
     expect(store.records).toEqual([]);
   });
 
-  it("rejects malformed events, cycles, and unreplaceable capacity", () => {
+  it("rejects malformed events, cycles, and excess active records", () => {
     const store = new ActivityStore();
     expect(
       store.accept({
@@ -49,14 +54,12 @@ describe("Activity", () => {
         record: record("x"),
       }),
     ).toBe(false);
-    expect(
-      store.accept({
-        version: 1,
-        source: "x",
-        generation: "g",
-        operation: "replace",
-      }),
-    ).toBe(true);
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
     expect(
       store.accept({
         version: 1,
@@ -95,10 +98,21 @@ describe("Activity", () => {
     ).toBe(false);
   });
 
-  it("settles terminal rows and repaints at the nearest duration boundary", () => {
+  it("removes final active work immediately", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const publisher = createActivityPublisher(events, "x");
+    publisher.upsert(record("running", { startedAt: Date.now() }));
+    expect(store.records).toHaveLength(1);
+    publisher.remove("running");
+    expect(store.records).toEqual([]);
+  });
+
+  it("repaints quiet timed work and stops after removal", () => {
     vi.useFakeTimers();
     try {
-      vi.setSystemTime(100);
+      vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
       const store = new ActivityStore();
       const notify = vi.fn();
       store.subscribe(notify);
@@ -108,69 +122,42 @@ describe("Activity", () => {
         generation: "g",
         operation: "replace",
       });
+      notify.mockClear();
       store.accept({
         version: 1,
         source: "x",
         generation: "g",
         operation: "upsert",
-        record: record("running", { startedAt: 100, updatedAt: 100 }),
+        record: record("quiet", { startedAt: Date.now() }),
       });
       notify.mockClear();
-      vi.advanceTimersByTime(900);
-      expect(notify).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(499);
+      expect(notify).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(notify).toHaveBeenCalledOnce();
+
+      notify.mockClear();
       store.accept({
         version: 1,
         source: "x",
         generation: "g",
-        operation: "upsert",
-        record: record("done", { state: "completed", updatedAt: Date.now() }),
+        operation: "remove",
+        id: "quiet",
       });
-      vi.advanceTimersByTime(5_000);
-      expect(store.records.map((item) => item.id)).toEqual(["running"]);
+      notify.mockClear();
+      vi.advanceTimersByTime(2_000);
+      expect(notify).not.toHaveBeenCalled();
+      store.dispose();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("safely checkpoints accepted far-future timer boundaries", () => {
-    let now = 100;
-    const scheduled: Array<{ handler: () => void; milliseconds: number }> = [];
-    const clock = {
-      now: () => now,
-      setTimeout: vi.fn((handler: () => void, milliseconds: number) => {
-        scheduled.push({ handler, milliseconds });
-        return scheduled.length;
-      }),
-      clearTimeout: vi.fn(),
-    };
-    const store = new ActivityStore(clock as never);
-    store.accept({
-      version: 1,
-      source: "x",
-      generation: "g",
-      operation: "replace",
-    });
-    expect(
-      store.accept({
-        version: 1,
-        source: "x",
-        generation: "g",
-        operation: "upsert",
-        record: record("future", {
-          state: "completed",
-          updatedAt: ACTIVITY_TIMESTAMP_MAX,
-        }),
-      }),
-    ).toBe(true);
-    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
-
-    const first = scheduled.at(-1)!;
-    now += first.milliseconds;
-    first.handler();
-    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
-  });
-
-  it("rejects oversized byte text and unsafe timestamps or progress", () => {
+  it("rejects terminal states and oversized or unsafe fields", () => {
+    expect(validateActivityRecord(record("x", { state: "failed" }))).toBe(
+      false,
+    );
     expect(
       validateActivityRecord(
         record("x", { updatedAt: ACTIVITY_TIMESTAMP_MAX + 1 }),
@@ -194,16 +181,10 @@ describe("Activity", () => {
         record("x", { title: "😀".repeat(ACTIVITY_TEXT_BYTE_LIMIT) }),
       ),
     ).toBe(false);
-    expect(
-      validateActivityRecord(
-        record("x", { progress: { completed: 1, total: 2 } }),
-      ),
-    ).toBe(true);
   });
 
-  it("keeps an urgent descendant with its settled ancestor inside the body budget", () => {
+  it("keeps hierarchy, details, overflow, and ANSI-safe width bounded", () => {
     const store = new ActivityStore();
-    const now = Date.now();
     store.accept({
       version: 1,
       source: "x",
@@ -216,10 +197,7 @@ describe("Activity", () => {
         source: "x",
         generation: "g",
         operation: "upsert",
-        record: record(`root${index}`, {
-          state: "failed",
-          updatedAt: now,
-        }),
+        record: record(`root${index}`, { updatedAt: 1 }),
       });
     }
     store.accept({
@@ -227,37 +205,16 @@ describe("Activity", () => {
       source: "x",
       generation: "g",
       operation: "upsert",
-      record: record("settled", {
-        state: "completed",
-        title: "settled ancestor",
-        detail: "ancestor detail",
-        updatedAt: now,
+      record: record("child", {
+        parent: { source: "x", id: "root0" },
+        detail: "reading registration paths",
+        metric: "82k context",
+        updatedAt: 1,
       }),
     });
-    store.accept({
-      version: 1,
-      source: "x",
-      generation: "g",
-      operation: "upsert",
-      record: record("urgent", {
-        parent: { source: "x", id: "settled" },
-        state: "failed",
-        title: "urgent child",
-        detail: "urgent detail",
-        updatedAt: now,
-      }),
-    });
-    const theme = {
-      fg: (_tone: string, text: string) => text,
-      bold: (text: string) => text,
-    } as never;
-    const lines = renderActivity(store.records, 24, theme, now);
-    expect(lines.join("\n")).toContain("settled");
-    expect(lines.join("\n")).toContain("urgent");
-    expect(lines.join("\n")).not.toContain("ancestor detail");
-    expect(lines.join("\n")).not.toContain("urgent detail");
-    expect(lines).toContain("… 2 more");
-    expect(lines).toHaveLength(10);
+    const lines = renderActivity(store.records, 24, theme, Date.now());
+    expect(lines.join("\n")).toContain("reading");
+    expect(lines.join("\n")).toContain("… 2 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });
 });

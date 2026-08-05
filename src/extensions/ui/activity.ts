@@ -2,7 +2,6 @@ import type { EventBus } from "@earendil-works/pi-coding-agent";
 
 export const ACTIVITY_CHANNEL = "pipkin:ui:activity:v1";
 export const ACTIVITY_VERSION = 1;
-export const ACTIVITY_SETTLEMENT_MS = 5_000;
 export const ACTIVITY_SOURCE_CAPACITY = 64;
 export const ACTIVITY_HOST_CAPACITY = 128;
 
@@ -18,20 +17,14 @@ const generationPrefix = `${Date.now().toString(36)}-`;
 let nextGeneration = 1;
 
 export type ActivityIdentity = { source: string; id: string };
-export type ActivityState =
-  | "queued"
-  | "running"
-  | "waiting"
-  | "attention"
-  | "completed"
-  | "failed"
-  | "stopped";
+export type ActivityState = "queued" | "running" | "waiting";
 export type ActivityRecord = {
   id: string;
   parent?: ActivityIdentity;
   label: string;
   title: string;
   detail?: string;
+  metric?: string;
   state: ActivityState;
   progress?: { completed: number; total: number };
   startedAt?: number;
@@ -123,6 +116,7 @@ export function validateActivityRecord(
       "label",
       "title",
       "detail",
+      "metric",
       "state",
       "progress",
       "startedAt",
@@ -136,15 +130,7 @@ export function validateActivityRecord(
     !ID_PATTERN.test(value.id) ||
     !validText(value.label) ||
     !validText(value.title) ||
-    ![
-      "queued",
-      "running",
-      "waiting",
-      "attention",
-      "completed",
-      "failed",
-      "stopped",
-    ].includes(value.state as string) ||
+    !["queued", "running", "waiting"].includes(value.state as string) ||
     !validTimestamp(value.updatedAt)
   ) {
     return false;
@@ -155,6 +141,16 @@ export function validateActivityRecord(
       value.detail,
       ACTIVITY_DETAIL_CODEPOINT_LIMIT,
       ACTIVITY_DETAIL_BYTE_LIMIT,
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.metric !== undefined &&
+    !validText(
+      value.metric,
+      ACTIVITY_TEXT_CODEPOINT_LIMIT,
+      ACTIVITY_TEXT_BYTE_LIMIT,
     )
   ) {
     return false;

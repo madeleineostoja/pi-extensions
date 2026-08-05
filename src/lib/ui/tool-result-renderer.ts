@@ -28,19 +28,23 @@ type RendererOptions = {
  */
 export function toolResultRenderer(options: RendererOptions) {
   return function renderResult(
-    result: ResultLike,
+    result: ResultLike & { isError?: boolean },
     renderOptions: RenderOptions,
     theme: Theme,
-    context: RenderContext,
+    context: RenderContext = {},
   ): Component {
-    const state = context.isError
+    const renderContext = {
+      ...context,
+      isError: context.isError ?? result.isError,
+    };
+    const state = renderContext.isError
       ? options.error
       : renderOptions.isPartial
         ? options.partial
         : options.summary;
     const lines = summaryLines(
-      state?.(result, context) ??
-        (context.isError
+      state?.(result, renderContext) ??
+        (renderContext.isError
           ? "Failed."
           : renderOptions.isPartial
             ? "Working…"
@@ -48,7 +52,7 @@ export function toolResultRenderer(options: RendererOptions) {
     );
     if (!renderOptions.expanded) {
       return new Text(
-        theme.fg(tone(context, renderOptions), lines.join("\n")),
+        theme.fg(tone(renderContext, renderOptions), lines.join("\n")),
         0,
         0,
       );
@@ -58,18 +62,20 @@ export function toolResultRenderer(options: RendererOptions) {
     if (lines.length > 0) {
       view.addChild(
         new Text(
-          theme.fg(tone(context, renderOptions), lines.join("\n")),
+          theme.fg(tone(renderContext, renderOptions), lines.join("\n")),
           0,
           0,
         ),
       );
     }
-    const details = summaryLines(options.expandedDetails?.(result, context));
+    const details = summaryLines(
+      options.expandedDetails?.(result, renderContext),
+    );
     if (details.length > 0) {
       view.addChild(new Text(theme.fg("dim", details.join("\n")), 0, 0));
     }
     for (const block of textBlocks(
-      options.expandedContent?.(result, context) ?? result.content,
+      options.expandedContent?.(result, renderContext) ?? result.content,
     )) {
       view.addChild(
         options.content === "markdown"

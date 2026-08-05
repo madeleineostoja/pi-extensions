@@ -69,7 +69,10 @@ describe("Implement Activity projector", () => {
 
     const children = store.records.filter((record) => record.parent);
     expect(children).toHaveLength(1);
-    expect(children[0]).toMatchObject({ state: "attention" });
+    expect(children[0]).toMatchObject({
+      state: "waiting",
+      detail: "failed",
+    });
   });
 
   it.each([
@@ -141,6 +144,69 @@ describe("Implement Activity projector", () => {
     expect(new Set(vi.mocked(publisher.remove).mock.calls.flat())).toEqual(
       new Set(firstIds),
     );
+  });
+
+  it("updates the live root with the generated title without rewriting it", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    activity.update(state());
+    activity.setTitle("Implement · exact generated title");
+
+    expect(publisher.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: "Implement · exact generated title" }),
+    );
+  });
+
+  it("retains failed lanes while a failed run settles its owned work", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const activity = createImplementActivity(events, {} as never);
+    const stopping = {
+      ...state({ lane: { id: "lane", phase: "failed", taskIds: [] } }),
+      phase: "stopping",
+      failure: {
+        category: "runtime",
+        reason: "worker failed",
+        originPhase: "running",
+        at: new Date().toISOString(),
+      },
+    } as unknown as RunState;
+
+    activity.update(stopping);
+
+    expect(store.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Implement", state: "running" }),
+        expect.objectContaining({
+          label: "Workstream",
+          state: "waiting",
+          detail: "failed",
+        }),
+      ]),
+    );
+
+    activity.update({ ...stopping, phase: "failed" });
+    expect(store.records).toEqual([]);
+  });
+
+  it("clears all live work at terminal run settlement", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    activity.update(
+      state({ lane: { id: "lane", phase: "failed", taskIds: [] } }),
+    );
+    activity.update({ ...state(), phase: "failed" });
+
+    expect(publisher.dispose).toHaveBeenCalledOnce();
   });
 
   it("shuts down idempotently and ignores later updates", () => {

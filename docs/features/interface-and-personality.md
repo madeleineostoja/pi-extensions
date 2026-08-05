@@ -17,7 +17,7 @@ Cost includes assistant usage and prompt-cache read/write pricing on the active 
 
 Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses. Sandbox becomes warning-yellow and shows its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
 
-UI also owns the generic bounded Activity view. Processes, Subagents, and Implement publish source-qualified activity but keep ownership of their records, lifecycle, inspectors, and cleanup. Activity excludes transcript content, prompts, commands, cwd, raw output, hidden runtime objects, and cost or token telemetry.
+UI also owns the generic bounded Activity view. Processes, Subagents, and Implement publish source-qualified queued, running, or waiting work but keep ownership of their records, lifecycle, inspectors, cleanup, and terminal delivery; they remove settled work immediately. The full-width pending-work box has no history or count. Activity excludes prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry. A Subagent row may show current context usage and one already-bounded latest-assistant preview.
 
 UI does not replace Pi's editor, working indicator, selectors, built-in tool renderers, or custom-message presentation.
 

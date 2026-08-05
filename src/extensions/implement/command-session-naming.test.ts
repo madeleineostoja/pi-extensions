@@ -42,6 +42,14 @@ const temporaryDirectories = new Set<string>();
 type Command = { handler: (input: string, ctx: any) => Promise<void> };
 type EventHandler = (event: unknown, ctx: any) => unknown;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function fixture(options?: {
   cwd?: string;
   existingName?: string;
@@ -112,15 +120,18 @@ function planFixture(): { cwd: string; planPath: string } {
   return { cwd, planPath };
 }
 
-function activeRun(): ActiveRun {
+function activeRun(
+  runId = "run-1",
+  phase: RunState["phase"] = "planning",
+): ActiveRun {
   const state = {
-    phase: "planning",
-    run: { id: "run-1" },
+    phase,
+    run: { id: runId },
     tasks: {},
     workstreams: { source: {}, overall: {} },
   } as RunState;
   return {
-    runId: "run-1",
+    runId,
     store: { read: () => state },
   } as ActiveRun;
 }
@@ -200,6 +211,54 @@ describe("/implement session naming", () => {
       "Implement managed processes",
     );
     expect(fixtureState.setHeader).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("does not apply a settled run's late name to a newer Activity", async () => {
+    const plan = planFixture();
+    const fixtureState = fixture({ cwd: plan.cwd });
+    const starts: any[] = [];
+    const firstName = deferred<{ outcome: "success"; title: string }>();
+    const secondName = deferred<{ outcome: "success"; title: string }>();
+    mocks.startRun.mockImplementation(async (options) => {
+      starts.push(options);
+      return {
+        kind: "started",
+        active: activeRun(`run-${starts.length}`),
+      };
+    });
+    mocks.generateSessionName
+      .mockReturnValueOnce(firstName.promise)
+      .mockReturnValueOnce(secondName.promise);
+
+    await fixtureState.command.handler(plan.planPath, fixtureState.ctx);
+    await vi.waitFor(() =>
+      expect(mocks.generateSessionName).toHaveBeenCalledTimes(1),
+    );
+    starts[0]!.onTransition?.(activeRun("run-1", "failed").store.read(), {
+      kind: "planner_bound",
+    });
+    starts[0]!.onCompleted?.(activeRun("run-1", "failed") as never);
+    await flushPromises();
+
+    await fixtureState.command.handler(plan.planPath, fixtureState.ctx);
+    await vi.waitFor(() =>
+      expect(mocks.generateSessionName).toHaveBeenCalledTimes(2),
+    );
+    firstName.resolve({ outcome: "success", title: "Implement stale title" });
+    await flushPromises();
+
+    expect(fixtureState.setSessionName).not.toHaveBeenCalled();
+
+    secondName.resolve({
+      outcome: "success",
+      title: "Implement current title",
+    });
+    await flushPromises();
+
+    expect(fixtureState.setSessionName).toHaveBeenCalledTimes(1);
+    expect(fixtureState.setSessionName).toHaveBeenCalledWith(
+      "Implement current title",
+    );
   });
 
   it("does not apply naming that settles after shutdown", async () => {

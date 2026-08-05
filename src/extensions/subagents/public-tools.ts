@@ -186,7 +186,7 @@ export function registerPublicAgentTools({
     ),
     async execute(_toolCallId, params) {
       const snapshot = await runtime.steer(params.id, params.message);
-      return toolResult(snapshot);
+      return toolResult(snapshot, "steer");
     },
     renderResult: renderAgentResult,
   });

@@ -72,7 +72,7 @@ The dashboard can:
 - queue guidance or request a point-in-time summary; and
 - stop active work with confirmation.
 
-The shared Activity view shows current public-agent and Implement work in a bounded hierarchy. It omits prompts, commands, cwd, raw output, hidden runtime objects, and token or cost telemetry. `/agents` is the complete inspector, including Implement-managed workers and retained records.
+The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Foreground failures remain in their ordinary tool row; a detached public background failure is notified once and remains inspectable in `/agents`, which is the complete inspector including Implement-managed workers and retained records.
 
 Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends. Stopped or failed partial progress is recoverable only while the current parent session remains alive; inspection does not create persistent or resumable child sessions.
 

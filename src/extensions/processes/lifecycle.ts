@@ -27,7 +27,7 @@ export class ProcessSessionLifecycle {
     this.#runtime = runtime;
     if (ctx.mode === "tui" && ctx.hasUI) {
       this.#activity = new ProcessActivityProjector(runtime, this.pi.events);
-      this.#activity.start();
+      this.#activity.start((message, level) => ctx.ui.notify(message, level));
     }
   }
 

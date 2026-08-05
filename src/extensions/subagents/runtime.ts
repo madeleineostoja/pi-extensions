@@ -139,6 +139,7 @@ export type RuntimeSnapshot<TResult = unknown> = {
   extensionBinding: ExtensionBindingStatus;
   canSteer?: boolean;
   rosterVisibility: RosterVisibility;
+  launchMode?: PublicAgentMode;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
   result?: TResult;
@@ -156,6 +157,7 @@ export type QueueSubagentInput = {
   thinking?: ThinkingLevel;
   extensionBinding?: ExtensionBindingStatus;
   rosterVisibility?: RosterVisibility;
+  launchMode?: PublicAgentMode;
 };
 
 export type PublicAgentMode = "foreground" | "background";
@@ -413,6 +415,9 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
     extensionBinding: record.extensionBinding,
     ...(record.canSteer === undefined ? {} : { canSteer: record.canSteer }),
     rosterVisibility: record.rosterVisibility,
+    ...(record.launchMode === undefined
+      ? {}
+      : { launchMode: record.launchMode }),
     timestamps: {
       queuedAt: record.queuedAt,
       ...(record.startedAt === undefined
@@ -943,6 +948,9 @@ export class SubagentRuntime {
       ...(thinking === undefined ? {} : { thinking }),
       extensionBinding: input.extensionBinding ?? "unbound",
       rosterVisibility: input.rosterVisibility ?? "show",
+      ...(input.launchMode === undefined
+        ? {}
+        : { launchMode: input.launchMode }),
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
@@ -985,6 +993,7 @@ export class SubagentRuntime {
       thinking: input.thinking,
       extensionBinding: "unbound",
       rosterVisibility: input.rosterVisibility,
+      launchMode: input.mode,
     });
     const record = this.#requireRecord(queued.id);
     if (input.completion) {

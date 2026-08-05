@@ -53,7 +53,7 @@ Consumers never import another feature's registration root. A new mapping requir
 
 Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
 
-UI owns generic presentation, not producer state or cleanup. Activity omits transcript content, prompts, commands, cwd, raw output, hidden runtime objects, and cost or token telemetry. Personality owns voice and identity, including the synchronous fresh-session welcome and Implement naming.
+UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the synchronous fresh-session welcome and Implement naming.
 
 ## Separate loaders and explicit coordination
 

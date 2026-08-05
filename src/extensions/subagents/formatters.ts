@@ -1,7 +1,7 @@
 import type { RuntimeSnapshot } from "./runtime.js";
 
 export function elapsedLabel(
-  snapshot: RuntimeSnapshot,
+  snapshot: Pick<RuntimeSnapshot, "timestamps">,
   currentTime = Date.now(),
 ): string {
   const start = Date.parse(
@@ -18,11 +18,6 @@ export function elapsedLabel(
     return `${seconds}s`;
   }
   return `${Math.floor(seconds / 60)}m ${(seconds % 60).toString().padStart(2, "0")}s`;
-}
-
-export function contextUsageLabel(snapshot: RuntimeSnapshot): string {
-  const tokens = snapshot.health?.contextUsage?.tokens;
-  return tokens === undefined || tokens === null ? "?" : tokenLabel(tokens);
 }
 
 export function costLabel(value: number | undefined): string {

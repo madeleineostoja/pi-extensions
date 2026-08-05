@@ -30,6 +30,7 @@ import { EXPLORE_PROMPT, REVIEW_PROMPT } from "./agent-profiles.js";
 import { ForegroundInterruptGuard } from "./foreground-interrupt.js";
 import { registerSubagentLifecycle } from "./lifecycle.js";
 import { registerPublicAgentTools } from "./public-tools.js";
+import { renderAgentResult } from "./tool-rendering.js";
 import { SubagentActivityProjector } from "./activity-projector.js";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
@@ -366,10 +367,8 @@ describe("public subagent tools", () => {
         makeCtx({ cwd: "/invoking" }),
       );
 
-      expect(result.details).toMatchObject({
-        type: subagent_type,
-        cwd: "/invoking",
-      });
+      expect(result.details).toMatchObject({ type: subagent_type });
+      expect(result.details).not.toHaveProperty("cwd");
     }
     expect(createSession).toHaveBeenCalledTimes(2);
     expect(createdCwds).toEqual(["/invoking", "/invoking"]);
@@ -412,8 +411,8 @@ describe("public subagent tools", () => {
       expect(foreground.details).toMatchObject({
         type: "Review",
         status: "completed",
-        result: "done",
       });
+      expect(foreground.details).not.toHaveProperty("result");
 
       const background = await agent!.execute(
         "call-2",
@@ -426,7 +425,7 @@ describe("public subagent tools", () => {
         undefined,
         makeCtx(),
       );
-      expect(textContent(background)).toContain("Subagent subagent-");
+      expect(textContent(background)).toContain("Started subagent subagent-");
       expect(textContent(background)).toContain(
         "Continue the independent work that justified background mode",
       );
@@ -581,8 +580,8 @@ describe("public subagent tools", () => {
     expect(completedResult.details).toMatchObject({
       id: completed.id,
       status: "completed",
-      result: deliverable,
     });
+    expect(completedResult.details).not.toHaveProperty("result");
 
     const collapsed = renderedText(
       getResult!.renderResult!(
@@ -598,13 +597,12 @@ describe("public subagent tools", () => {
         mockTheme,
       ),
     );
-    expect(collapsed).toContain(
+    expect(collapsed).toContain("Retrieved result for finished.");
+    expect(collapsed).not.toContain(
       "complete final deliverable with retrieval-only content avoided",
     );
-    expect(collapsed).toContain("…");
-    expect(expanded).not.toContain("…");
-    expect(expanded.split("\n").length).toBeGreaterThan(
-      collapsed.split("\n").length,
+    expect(expanded).toContain(
+      "complete final deliverable with retrieval-only content avoided",
     );
     expect(expanded).toContain("expanded-only detail expanded-only detail");
 
@@ -711,6 +709,53 @@ describe("public subagent tools", () => {
       "stopped: Steer stopped.",
     );
     steerSpy.mockRestore();
+  });
+
+  it("renders fresh retrieval and steering rows from their submitted IDs", () => {
+    const partial = { expanded: false, isPartial: true };
+    const retrieval = renderedText(
+      renderAgentResult({ content: [] }, partial, mockTheme, {
+        args: { id: "subagent-12", wait: false },
+      }),
+    );
+    const steering = renderedText(
+      renderAgentResult({ content: [] }, partial, mockTheme, {
+        args: { id: "subagent-13", message: "continue" },
+      }),
+    );
+
+    expect(retrieval).toContain("Retrieving subagent subagent-12");
+    expect(steering).toContain("Queueing guidance for subagent-13");
+    expect(retrieval).not.toContain("Starting subagent");
+    expect(steering).not.toContain("Starting subagent");
+  });
+
+  it("keeps rejected retrieval and steering errors actionable and complete", () => {
+    const error = {
+      content: [{ type: "text", text: "Unknown subagent subagent-404." }],
+      isError: true,
+    };
+    const options = { expanded: false, isPartial: false };
+    const retrieval = renderedText(
+      renderAgentResult(error, options, mockTheme, {
+        args: { id: "subagent-404", wait: true },
+      }),
+    );
+    const steering = renderedText(
+      renderAgentResult(error, options, mockTheme, {
+        args: { id: "subagent-404", message: "continue" },
+      }),
+    );
+    const expanded = renderedText(
+      renderAgentResult(error, { ...options, expanded: true }, mockTheme, {
+        args: { id: "subagent-404", wait: true },
+      }),
+    );
+
+    expect(retrieval).toContain("Could not retrieve subagent subagent-404");
+    expect(steering).toContain("Could not steer subagent subagent-404");
+    expect(retrieval).toContain("Unknown subagent subagent-404.");
+    expect(expanded).toContain("Unknown subagent subagent-404.");
   });
 
   it("returns bounded public progress without changing completed output", async () => {

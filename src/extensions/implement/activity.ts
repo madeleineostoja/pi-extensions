@@ -9,6 +9,7 @@ import {
   type ActivityPublisher,
   type ActivityState,
 } from "#ui/activity";
+import { formatDuration } from "#lib/ui/metrics";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunState } from "./store.js";
@@ -20,16 +21,29 @@ export function createImplementActivity(
   publisher: ActivityPublisher = createActivityPublisher(events, "implement"),
 ): {
   update(state: RunState, event?: TransitionEvent): void;
+  setTitle(title: string): void;
   clear(): void;
 } {
   let plan: ExecutionPlan | undefined;
   let planPath: string | undefined;
   let enabled = true;
   let published = new Set<string>();
+  let title = "Implement run";
+  let latestState: RunState | undefined;
 
   return {
     update(state, event) {
       if (!enabled) {
+        return;
+      }
+      latestState = state;
+      if (terminalRun(state)) {
+        enabled = false;
+        published.clear();
+        publisher.dispose();
+        if (event) {
+          bestEffort(() => notifyAttentionTransition(ctx, state, event, plan));
+        }
         return;
       }
       if (state.executionPlan?.path !== planPath) {
@@ -41,11 +55,22 @@ export function createImplementActivity(
         plan = nextPlan;
       }
       published =
-        bestEffort(() => publishActivity(publisher, state, plan, published)) ??
-        published;
+        bestEffort(() =>
+          publishActivity(publisher, state, plan, title, published),
+        ) ?? published;
       if (event) {
         bestEffort(() => notifyAttentionTransition(ctx, state, event, plan));
       }
+    },
+    setTitle(nextTitle) {
+      if (!enabled || !latestState) {
+        return;
+      }
+      title = nextTitle;
+      published =
+        bestEffort(() =>
+          publishActivity(publisher, latestState!, plan, title, published),
+        ) ?? published;
     },
     clear() {
       if (!enabled) {
@@ -62,6 +87,7 @@ function publishActivity(
   publisher: ActivityPublisher,
   state: RunState,
   plan: ExecutionPlan | undefined,
+  title: string,
   previous: ReadonlySet<string>,
 ): Set<string> {
   const runId = activityId("run", state.run.id);
@@ -88,10 +114,13 @@ function publishActivity(
     publisher.upsert({
       id: runId,
       label: "Implement",
-      title: "Implementation run",
-      detail: shorten(runPhase(state), 120),
+      title,
+      metric: shorten(runPhase(state), 120),
       state: runState(state),
       ...(total ? { progress: { completed: published, total } } : {}),
+      ...(timestamp(state.createdAt) === undefined
+        ? {}
+        : { startedAt: timestamp(state.createdAt) }),
       updatedAt: Date.now(),
     })
   ) {
@@ -118,6 +147,7 @@ function publishActivity(
         title: shorten(title, 240),
         detail: shorten(workstreamPhase(workstream.phase), 120),
         state: workstreamState(workstream.phase),
+        ...durableWorkstreamStart(state, { kind: "source", id: workstream.id }),
         updatedAt: Date.now(),
       })
     ) {
@@ -137,6 +167,10 @@ function publishActivity(
         title: "Whole-plan repair",
         detail: shorten(workstreamPhase(workstream.phase), 120),
         state: workstreamState(workstream.phase),
+        ...durableWorkstreamStart(state, {
+          kind: "overall",
+          repairId: workstream.repairId,
+        }),
         updatedAt: Date.now(),
       })
     ) {
@@ -169,21 +203,57 @@ function activityId(kind: "run" | "source" | "repair", value: string): string {
     .slice(0, 64 - prefix.length)}`;
 }
 
+function terminalRun(state: RunState): boolean {
+  return ["completed", "failed", "incomplete"].includes(state.phase);
+}
+
 function terminalWorkstream(phase: string): boolean {
   return ["completed", "stopped", "dependency_skipped"].includes(phase);
 }
 
+function durableWorkstreamStart(
+  state: RunState,
+  workstream:
+    | { kind: "source"; id: string }
+    | { kind: "overall"; repairId: string },
+): { startedAt?: number; metric?: string } {
+  const matches = (candidate: {
+    workstream:
+      | { kind: "source"; id: string }
+      | { kind: "overall"; repairId: string };
+  }) => {
+    if (workstream.kind === "source") {
+      return (
+        candidate.workstream.kind === "source" &&
+        candidate.workstream.id === workstream.id
+      );
+    }
+    return (
+      candidate.workstream.kind === "overall" &&
+      candidate.workstream.repairId === workstream.repairId
+    );
+  };
+  const lease = Object.values(state.processLeases ?? {}).find(matches);
+  const startedAt = timestamp(lease?.acquiredAt);
+  if (startedAt !== undefined) {
+    return { startedAt };
+  }
+  const settlement = Object.values(state.operationSettlements ?? {})
+    .filter(matches)
+    .sort((left, right) => right.settledAt.localeCompare(left.settledAt))[0];
+  const settledAt = timestamp(settlement?.settledAt);
+  const acquiredAt = timestamp(settlement?.acquiredAt);
+  return settledAt === undefined || acquiredAt === undefined
+    ? {}
+    : { metric: formatDuration(settledAt - acquiredAt) };
+}
+
+function timestamp(value: string | undefined): number | undefined {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function runState(state: RunState): ActivityState {
-  if (
-    state.failure ||
-    state.phase === "failed" ||
-    state.phase === "incomplete"
-  ) {
-    return "failed";
-  }
-  if (state.phase === "completed") {
-    return "completed";
-  }
   if (state.phase === "planning") {
     return "queued";
   }
@@ -192,7 +262,7 @@ function runState(state: RunState): ActivityState {
 
 function workstreamState(phase: string): ActivityState {
   if (phase.includes("failed")) {
-    return "attention";
+    return "waiting";
   }
   if (phase === "queued") {
     return "queued";

@@ -39,12 +39,20 @@ export function registerImplementCommand(
   let lifecycle = Promise.resolve();
   let sessionGeneration = 0;
   let namingAbortController: AbortController | undefined;
+  let namingRunId: string | undefined;
   const handoffPublisher = createTerminalHandoffPublisher(pi);
+  const cancelSessionNaming = (runId?: string): void => {
+    if (runId !== undefined && namingRunId !== runId) {
+      return;
+    }
+    namingAbortController?.abort();
+    namingAbortController = undefined;
+    namingRunId = undefined;
+  };
 
   pi.on("session_start", () => {
     sessionGeneration++;
-    namingAbortController?.abort();
-    namingAbortController = undefined;
+    cancelSessionNaming();
   });
 
   const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -62,8 +70,7 @@ export function registerImplementCommand(
 
   pi.on("session_shutdown", (_event, ctx) => {
     sessionGeneration++;
-    namingAbortController?.abort();
-    namingAbortController = undefined;
+    cancelSessionNaming();
     handoffPublisher.dispose();
     return runLifecycle(async () => {
       activity?.clear();
@@ -115,6 +122,7 @@ export function registerImplementCommand(
         }
         const stopping = active;
         active = undefined;
+        cancelSessionNaming(stopping.runId);
         activity?.clear();
         activity = undefined;
         const failures: string[] = [];
@@ -233,6 +241,7 @@ export function registerImplementCommand(
     const owned = active;
     const state = owned.store.read();
     active = undefined;
+    cancelSessionNaming(owned.runId);
     activity?.clear();
     activity = undefined;
     if (state.phase === "completed") {
@@ -259,6 +268,7 @@ export function registerImplementCommand(
       return;
     }
     const failures = await resourceReleaseFailures(run);
+    cancelSessionNaming(run.runId);
     active = undefined;
     try {
       await run.lease.release();
@@ -294,6 +304,7 @@ export function registerImplementCommand(
       );
       return;
     }
+    cancelSessionNaming();
     activity?.clear();
     const nextActivity = createImplementActivity(pi.events, ctx);
     activity = nextActivity;
@@ -303,6 +314,9 @@ export function registerImplementCommand(
         NonNullable<Parameters<typeof startRun>[0]["onTransition"]>
       >[1],
     ) => {
+      if (terminalRunState(state)) {
+        cancelSessionNaming(state.run.id);
+      }
       try {
         nextActivity.update(state, event);
       } catch {
@@ -345,7 +359,13 @@ export function registerImplementCommand(
       }
       active = result.active;
       nextActivity.update(active.store.read());
-      beginSessionNaming(parsed.planPath, ctx, executionGeneration);
+      beginSessionNaming(
+        parsed.planPath,
+        ctx,
+        executionGeneration,
+        active.runId,
+        nextActivity,
+      );
       ctx.ui.notify(`Implement started run ${active.runId}.`, "info");
     } catch (error) {
       nextActivity.clear();
@@ -359,13 +379,21 @@ export function registerImplementCommand(
     planPath: string,
     ctx: ExtensionCommandContext,
     executionGeneration: number,
+    runId: string,
+    ownerActivity: ImplementActivity,
   ): void {
-    if (executionGeneration !== sessionGeneration) {
+    if (
+      executionGeneration !== sessionGeneration ||
+      active?.runId !== runId ||
+      activity !== ownerActivity ||
+      terminalRunState(active.store.read())
+    ) {
       return;
     }
-    namingAbortController?.abort();
+    cancelSessionNaming();
     const abortController = new AbortController();
     namingAbortController = abortController;
+    namingRunId = runId;
     const generation = executionGeneration;
 
     void readImplementPlanExcerpt(ctx.cwd, planPath)
@@ -387,12 +415,18 @@ export function registerImplementCommand(
         if (
           generation !== sessionGeneration ||
           namingAbortController !== abortController ||
+          namingRunId !== runId ||
+          active?.runId !== runId ||
+          activity !== ownerActivity ||
+          terminalRunState(active.store.read()) ||
           result.outcome !== "success"
         ) {
           return;
         }
         namingAbortController = undefined;
+        namingRunId = undefined;
         pi.setSessionName(result.title);
+        ownerActivity.setTitle(result.title);
       });
   }
 }
@@ -624,6 +658,10 @@ function runState(
     throw new Error("Historical artifacts require manual cleanup.");
   }
   return run.state;
+}
+
+function terminalRunState(state: RunState): boolean {
+  return ["completed", "failed", "incomplete"].includes(state.phase);
 }
 
 function formatRunListing(run: RunListing): string {

@@ -24,7 +24,7 @@ export function registerSubagentLifecycle({
   pi.on("session_start", (event: { reason?: string } = {}, ctx) => {
     activity.dispose();
     runtime.beginSession(event.reason);
-    activity.start();
+    activity.start((message, level) => ctx.ui.notify(message, level));
     foregroundInterrupt.install(ctx);
   });
 }

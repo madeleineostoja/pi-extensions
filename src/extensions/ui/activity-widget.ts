@@ -50,12 +50,15 @@ class ActivityWidget implements Component {
     }
     if (width < 3) {
       return renderActivity(records, Math.max(1, width), this.theme).map(
-        (line) => this.theme.bg("customMessageBg", line),
+        (line) => this.theme.bg("toolPendingBg", line),
       );
     }
-    const lines = renderActivity(records, width - 2, this.theme);
-    const box = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
-    box.addChild({ render: () => lines, invalidate() {} });
+    const box = new Box(1, 1, (text) => this.theme.bg("toolPendingBg", text));
+    box.addChild({
+      render: (contentWidth) =>
+        renderActivity(records, Math.max(1, contentWidth), this.theme),
+      invalidate() {},
+    });
     return box.render(width);
   }
 }
@@ -95,115 +98,66 @@ export function renderActivity(
   now = Date.now(),
 ): string[] {
   const contentWidth = Math.max(1, width);
-  const active = records.filter(
-    (record) =>
-      !["completed", "stopped"].includes(record.state) &&
-      record.state !== "failed",
-  ).length;
-  const failed = records.filter((record) => record.state === "failed").length;
-  const heading = [
-    "[•_•] Activity",
-    active ? `${active} active` : "",
-    failed ? `${failed} failed` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const lines = [
-    theme.bold(truncateToWidth(heading, contentWidth, "…", false)),
-  ];
-  const primaryRecords = recordsForBudget(records).slice(
-    0,
-    ACTIVITY_BODY_LINE_LIMIT,
-  );
-  const rendered = new Set<string>();
-  let detailLinesRemaining = ACTIVITY_BODY_LINE_LIMIT - primaryRecords.length;
-  for (const record of primaryRecords) {
+  const lines: string[] = [];
+  let remaining = ACTIVITY_BODY_LINE_LIMIT;
+  let renderedRecords = 0;
+  for (const record of records) {
+    if (remaining === 0) {
+      break;
+    }
     const depth = depthFor(record, records);
     lines.push(recordLine(record, depth, contentWidth, theme, now));
-    rendered.add(record.key);
-    if (record.detail && detailLinesRemaining > 0) {
-      const prefix = `${"  ".repeat(Math.min(depth + 1, 3))}  `;
-      lines.push(
-        truncateToWidth(
-          `${prefix}${theme.fg("muted", record.detail)}`,
-          contentWidth,
-          "…",
-          false,
-        ),
-      );
-      detailLinesRemaining -= 1;
+    remaining -= 1;
+    renderedRecords += 1;
+    if (record.detail && remaining > 0) {
+      lines.push(detailLine(record.detail, depth, contentWidth, theme));
+      remaining -= 1;
     }
   }
-  const overflow = records.length - rendered.size;
+  const overflow = records.length - renderedRecords;
   if (overflow > 0) {
     lines.push(
-      truncateToWidth(
-        theme.fg("muted", `… ${overflow} more`),
-        contentWidth,
-        "…",
-        false,
+      theme.fg(
+        "muted",
+        truncateToWidth(`… ${overflow} more`, contentWidth, "…", false),
       ),
     );
   }
-  return lines.map((line) => truncateToWidth(line, contentWidth, "…", false));
-}
-
-function recordsForBudget(
-  records: readonly StoredActivityRecord[],
-): StoredActivityRecord[] {
-  const byKey = new Map(records.map((record) => [record.key, record]));
-  const ordered: StoredActivityRecord[] = [];
-  const included = new Set<string>();
-  const append = (record: StoredActivityRecord) => {
-    if (!included.has(record.key)) {
-      included.add(record.key);
-      ordered.push(record);
-    }
-  };
-
-  for (const record of records) {
-    if (
-      (record.state !== "attention" && record.state !== "failed") ||
-      !record.parent ||
-      !byKey.has(`${record.parent.source}:${record.parent.id}`)
-    ) {
-      continue;
-    }
-    const path = [record];
-    const visited = new Set<string>([record.key]);
-    let parent = byKey.get(`${record.parent.source}:${record.parent.id}`);
-    while (parent && !visited.has(parent.key)) {
-      visited.add(parent.key);
-      path.push(parent);
-      parent = parent.parent
-        ? byKey.get(`${parent.parent.source}:${parent.parent.id}`)
-        : undefined;
-    }
-    for (const candidate of path.reverse().slice(-ACTIVITY_BODY_LINE_LIMIT)) {
-      append(candidate);
-    }
-  }
-  for (const record of records) {
-    append(record);
-  }
-  return ordered;
+  return lines;
 }
 
 function depthFor(
   record: StoredActivityRecord,
   records: readonly StoredActivityRecord[],
 ): number {
-  const keys = new Set(records.map((item) => item.key));
+  const byKey = new Map(records.map((item) => [item.key, item]));
   let depth = 0;
-  let parentKey = record.parent
-    ? `${record.parent.source}:${record.parent.id}`
+  let parent = record.parent
+    ? byKey.get(`${record.parent.source}:${record.parent.id}`)
     : undefined;
-  while (parentKey && keys.has(parentKey) && depth < 3) {
+  while (parent && depth < 3) {
     depth += 1;
-    const parent = records.find((item) => item.key === parentKey)?.parent;
-    parentKey = parent ? `${parent.source}:${parent.id}` : undefined;
+    parent = parent.parent
+      ? byKey.get(`${parent.parent.source}:${parent.parent.id}`)
+      : undefined;
   }
   return depth;
+}
+
+function detailLine(
+  detail: string,
+  depth: number,
+  width: number,
+  theme: Theme,
+): string {
+  const prefix = `${"  ".repeat(Math.min(depth + 1, 3))}`;
+  const plain = `${prefix}${truncateToWidth(
+    detail,
+    Math.max(0, width - visibleWidth(prefix)),
+    "…",
+    false,
+  )}`;
+  return theme.fg("muted", plain);
 }
 
 function recordLine(
@@ -214,23 +168,35 @@ function recordLine(
   now: number,
 ): string {
   const indentation = depth ? `${"  ".repeat(depth - 1)}└ ` : "";
-  const glyph = theme.fg(glyphTone(record.state), glyphFor(record.state));
+  const glyph = glyphFor(record.state);
   const prefix = `${indentation}${glyph} `;
-  const right = record.progress
-    ? formatProgress(record.progress.completed, record.progress.total)
-    : record.startedAt === undefined
-      ? ""
-      : formatDuration(now - record.startedAt);
-  const primaryWidth = Math.max(0, width - visibleWidth(prefix));
-  const primary = primaryFields(record.label, record.title, primaryWidth);
-  if (
-    !right ||
-    visibleWidth(prefix) + visibleWidth(primary) + visibleWidth(right) + 1 >
-      width
-  ) {
-    return truncateToWidth(`${prefix}${primary}`, width, "…", false);
+  if (visibleWidth(prefix) >= width) {
+    return theme.fg("accent", truncateToWidth(prefix, width, "", false));
   }
-  return `${prefix}${primary} ${theme.fg("muted", right)}`;
+  const right = rightFields(record, now);
+  const available = Math.max(
+    0,
+    width - visibleWidth(prefix) - (right ? visibleWidth(right) + 1 : 0),
+  );
+  const primary = primaryFields(record.label, record.title, available);
+  const shownRight = right && primary ? right : "";
+  return styleRecordLine(indentation, glyph, primary, shownRight, theme);
+}
+
+function rightFields(record: StoredActivityRecord, now: number): string {
+  const values: string[] = [];
+  if (record.metric) {
+    values.push(record.metric);
+  }
+  if (record.progress) {
+    values.push(
+      formatProgress(record.progress.completed, record.progress.total),
+    );
+  }
+  if (record.startedAt !== undefined) {
+    values.push(formatDuration(now - record.startedAt));
+  }
+  return values.join(" · ");
 }
 
 function primaryFields(label: string, title: string, width: number): string {
@@ -242,37 +208,29 @@ function primaryFields(label: string, title: string, width: number): string {
   }
   const separator = " · ";
   const available = width - visibleWidth(separator);
-  const labelWidth = Math.max(1, Math.floor(available / 2));
+  const labelWidth = Math.min(
+    visibleWidth(label),
+    Math.max(1, Math.floor(available / 2)),
+  );
   const titleWidth = Math.max(1, available - labelWidth);
   return `${truncateToWidth(label, labelWidth, "…", false)}${separator}${truncateToWidth(title, titleWidth, "…", false)}`;
 }
 
-function glyphFor(state: ActivityState): string {
-  return {
-    queued: "○",
-    running: "●",
-    waiting: "◌",
-    attention: "!",
-    completed: "✓",
-    failed: "×",
-    stopped: "■",
-  }[state];
+function styleRecordLine(
+  indentation: string,
+  glyph: string,
+  primary: string,
+  right: string,
+  theme: Theme,
+): string {
+  const labelEnd = primary.indexOf(" · ");
+  const styledPrimary =
+    labelEnd < 0
+      ? primary
+      : `${theme.fg("toolTitle", primary.slice(0, labelEnd))}${theme.fg("muted", " · ")}${primary.slice(labelEnd + 3)}`;
+  return `${theme.fg("accent", indentation)}${theme.fg("accent", glyph)} ${styledPrimary}${right ? ` ${theme.fg("muted", right)}` : ""}`;
 }
 
-function glyphTone(
-  state: ActivityState,
-): "muted" | "accent" | "warning" | "success" | "error" {
-  if (state === "failed") {
-    return "error";
-  }
-  if (state === "attention") {
-    return "warning";
-  }
-  if (state === "completed") {
-    return "success";
-  }
-  if (state === "queued" || state === "stopped") {
-    return "muted";
-  }
-  return "accent";
+function glyphFor(state: ActivityState): string {
+  return state === "running" ? "●" : state === "waiting" ? "◌" : "○";
 }

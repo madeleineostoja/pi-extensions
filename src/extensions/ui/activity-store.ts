@@ -1,6 +1,5 @@
 import {
   ACTIVITY_HOST_CAPACITY,
-  ACTIVITY_SETTLEMENT_MS,
   ACTIVITY_SOURCE_CAPACITY,
   type ActivityEvent,
   type ActivityIdentity,
@@ -14,53 +13,21 @@ export type StoredActivityRecord = ActivityRecord & {
   key: string;
 };
 
-type Clock = {
-  now(): number;
-  setTimeout(
-    handler: () => void,
-    milliseconds: number,
-  ): ReturnType<typeof setTimeout>;
-  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
-};
-
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const terminal = new Set<ActivityState>(["completed", "stopped"]);
-const settled = (record: StoredActivityRecord) => terminal.has(record.state);
-const priority = (state: ActivityState): number => {
-  if (state === "attention" || state === "failed") {
-    return 0;
-  }
-  if (state === "running" || state === "waiting") {
-    return 1;
-  }
-  if (state === "queued") {
-    return 2;
-  }
-  return 3;
-};
+const priority = (state: ActivityState): number =>
+  state === "running" ? 0 : state === "waiting" ? 1 : 2;
 
 function qualified(identity: ActivityIdentity): string {
   return `${identity.source}:${identity.id}`;
 }
 
+/** Stores only producer-owned live work. Producers remove settled records. */
 export class ActivityStore {
   #records = new Map<string, StoredActivityRecord>();
   #generations = new Map<string, string>();
   #listeners = new Set<() => void>();
-  #timer: ReturnType<typeof setTimeout> | undefined;
-
-  constructor(
-    private readonly clock: Clock = {
-      now: () => Date.now(),
-      setTimeout,
-      clearTimeout,
-    },
-  ) {}
+  #clock: ReturnType<typeof setTimeout> | undefined;
 
   get records(): StoredActivityRecord[] {
-    if (this.#expire()) {
-      this.#notify();
-    }
     return this.#ordered();
   }
 
@@ -77,7 +44,8 @@ export class ActivityStore {
     if (event.operation === "replace") {
       this.#generations.set(event.source, event.generation);
       this.#clearSource(event.source);
-      this.#changed();
+      this.#notify();
+      this.#syncClock();
       return true;
     }
     if (this.#generations.get(event.source) !== event.generation) {
@@ -85,13 +53,15 @@ export class ActivityStore {
     }
     if (event.operation === "clear") {
       this.#clearSource(event.source);
-      this.#changed();
+      this.#notify();
+      this.#syncClock();
       return true;
     }
     if (event.operation === "remove") {
       const changed = this.#records.delete(`${event.source}:${event.id}`);
       if (changed) {
-        this.#changed();
+        this.#notify();
+        this.#syncClock();
       }
       return changed;
     }
@@ -101,11 +71,8 @@ export class ActivityStore {
   clear(): void {
     this.#records.clear();
     this.#generations.clear();
-    if (this.#timer !== undefined) {
-      this.clock.clearTimeout(this.#timer);
-    }
-    this.#timer = undefined;
     this.#notify();
+    this.#syncClock();
   }
 
   dispose(): void {
@@ -129,20 +96,15 @@ export class ActivityStore {
         (item) => item.source === source,
       );
       if (
-        sourceRecords.length >= ACTIVITY_SOURCE_CAPACITY &&
-        !this.#evict(sourceRecords)
-      ) {
-        return false;
-      }
-      if (
-        this.#records.size >= ACTIVITY_HOST_CAPACITY &&
-        !this.#evict([...this.#records.values()])
+        sourceRecords.length >= ACTIVITY_SOURCE_CAPACITY ||
+        this.#records.size >= ACTIVITY_HOST_CAPACITY
       ) {
         return false;
       }
     }
     this.#records.set(key, candidate);
-    this.#changed();
+    this.#notify();
+    this.#syncClock();
     return true;
   }
 
@@ -160,75 +122,11 @@ export class ActivityStore {
     return false;
   }
 
-  #evict(records: StoredActivityRecord[]): boolean {
-    const eligible = records
-      .filter(settled)
-      .sort(
-        (left, right) =>
-          left.updatedAt - right.updatedAt || left.key.localeCompare(right.key),
-      )[0];
-    if (!eligible) {
-      return false;
-    }
-    this.#records.delete(eligible.key);
-    return true;
-  }
-
   #clearSource(source: string): void {
     for (const [key, record] of this.#records) {
       if (record.source === source) {
         this.#records.delete(key);
       }
-    }
-  }
-
-  #expire(): boolean {
-    const now = this.clock.now();
-    let changed = false;
-    for (const [key, record] of this.#records) {
-      if (settled(record) && now >= record.updatedAt + ACTIVITY_SETTLEMENT_MS) {
-        this.#records.delete(key);
-        changed = true;
-      }
-    }
-    this.#schedule();
-    return changed;
-  }
-
-  #changed(): void {
-    this.#schedule();
-    this.#notify();
-  }
-
-  #schedule(): void {
-    if (this.#timer !== undefined) {
-      this.clock.clearTimeout(this.#timer);
-    }
-    this.#timer = undefined;
-    const now = this.clock.now();
-    const boundaries = [...this.#records.values()].flatMap((record) => {
-      const values: number[] = [];
-      if (settled(record)) {
-        values.push(record.updatedAt + ACTIVITY_SETTLEMENT_MS);
-      }
-      if (!settled(record) && record.startedAt !== undefined) {
-        values.push(
-          record.startedAt > now ? record.startedAt : now + 1000 - (now % 1000),
-        );
-      }
-      return values;
-    });
-    const next = boundaries
-      .filter((boundary) => boundary > now)
-      .sort((a, b) => a - b)[0];
-    if (next !== undefined) {
-      this.#timer = this.clock.setTimeout(
-        () => {
-          this.#expire();
-          this.#notify();
-        },
-        Math.min(MAX_TIMER_DELAY_MS, Math.max(1, next - now)),
-      );
     }
   }
 
@@ -251,18 +149,15 @@ export class ActivityStore {
       priority(left.state) - priority(right.state) ||
       right.updatedAt - left.updatedAt ||
       left.key.localeCompare(right.key);
-    const subtreePriority = (record: StoredActivityRecord): number => {
-      const own = priority(record.state);
-      return (children.get(record.key) ?? []).reduce(
+    const subtreePriority = (record: StoredActivityRecord): number =>
+      (children.get(record.key) ?? []).reduce(
         (best, child) => Math.min(best, subtreePriority(child)),
-        own,
+        priority(record.state),
       );
-    };
-    const compareRoots = (
-      left: StoredActivityRecord,
-      right: StoredActivityRecord,
-    ) => subtreePriority(left) - subtreePriority(right) || compare(left, right);
-    roots.sort(compareRoots);
+    roots.sort(
+      (left, right) =>
+        subtreePriority(left) - subtreePriority(right) || compare(left, right),
+    );
     const result: StoredActivityRecord[] = [];
     const add = (record: StoredActivityRecord) => {
       result.push(record);
@@ -274,6 +169,37 @@ export class ActivityStore {
     return result;
   }
 
+  #syncClock(): void {
+    if (this.#clock !== undefined) {
+      clearTimeout(this.#clock);
+      this.#clock = undefined;
+    }
+    const now = Date.now();
+    const delays = [...this.#records.values()].flatMap((record) =>
+      record.startedAt === undefined
+        ? []
+        : [nextDurationBoundary(record.startedAt, now)],
+    );
+    if (delays.length === 0) {
+      return;
+    }
+    this.#clock = setTimeout(
+      () => {
+        this.#clock = undefined;
+        if (
+          [...this.#records.values()].some(
+            (record) => record.startedAt !== undefined,
+          )
+        ) {
+          this.#notify();
+          this.#syncClock();
+        }
+      },
+      Math.min(...delays),
+    );
+    this.#clock.unref?.();
+  }
+
   #notify(): void {
     for (const listener of Array.from(this.#listeners)) {
       try {
@@ -283,4 +209,12 @@ export class ActivityStore {
       }
     }
   }
+}
+
+function nextDurationBoundary(startedAt: number, now: number): number {
+  const firstBoundary = startedAt + 500;
+  if (now < firstBoundary) {
+    return firstBoundary - now;
+  }
+  return 1_000 - ((now - firstBoundary) % 1_000);
 }
