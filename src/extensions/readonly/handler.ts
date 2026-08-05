@@ -1,4 +1,4 @@
-import { formatSteer } from "./utils.js";
+import { formatDeny } from "./utils.js";
 
 export type ResolveChoiceResult = {
   block: boolean;
@@ -16,5 +16,5 @@ export function resolveChoice(params: {
   if (params.choice === "Allow for session") {
     return { block: false, disable: true };
   }
-  return { block: true, reason: formatSteer(params.message ?? "") };
+  return { block: true, reason: formatDeny(params.message ?? "") };
 }

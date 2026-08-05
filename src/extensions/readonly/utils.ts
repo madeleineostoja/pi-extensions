@@ -37,8 +37,8 @@ export function formatReadonlyTarget(
   return `${prefix}…`;
 }
 
-export function formatSteerTitle(path: string | undefined): string {
-  return path ? `Steer the agent — ${path}` : "Steer the agent";
+export function formatDenyTitle(path: string | undefined): string {
+  return path ? `Deny the change — ${path}` : "Deny the change";
 }
 
 export function parseReadonlyArgs(args: string): ReadonlyAction {
@@ -55,9 +55,9 @@ export function parseReadonlyArgs(args: string): ReadonlyAction {
   return { kind: "invalid" };
 }
 
-export function formatSteer(message: string): string {
+export function formatDeny(message: string): string {
   if (!message.trim()) {
-    return "Edit not applied. User declined without feedback. Ask for clarification before retrying.";
+    return "Edit not applied. User denied the proposed change without a reason. Ask for clarification before retrying.";
   }
-  return `Edit not applied. User intercepted the proposed change and provided this feedback:\n\n${message.trim()}\n\nTake this into account. Incorporate this feedback before retrying.`;
+  return `Edit not applied. User denied the proposed change for this reason:\n\n${message.trim()}\n\nTake this reason into account before retrying.`;
 }

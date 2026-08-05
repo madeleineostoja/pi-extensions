@@ -9,7 +9,7 @@ import {
   parseReadonlyArgs,
   extractToolPath,
   formatReadonlyTarget,
-  formatSteerTitle,
+  formatDenyTitle,
 } from "./utils";
 
 const READONLY_STATUS = { id: "readonly", priority: 100 } as const;
@@ -89,11 +89,11 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
         { value: "Allow", label: "Allow" },
         { value: "Allow for session", label: "Allow for session" },
         {
-          value: "Steer",
-          label: "Steer",
+          value: "Deny",
+          label: "Deny",
           input: {
-            title: formatSteerTitle(path),
-            placeholder: "what should the agent do differently?",
+            title: formatDenyTitle(path),
+            placeholder: "give a reason",
           },
         },
       ],

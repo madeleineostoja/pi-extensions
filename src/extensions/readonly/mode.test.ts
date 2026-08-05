@@ -8,7 +8,7 @@ import { registerReadonlyMode } from "./mode";
 import {
   extractToolPath,
   formatReadonlyTarget,
-  formatSteerTitle,
+  formatDenyTitle,
   parseReadonlyArgs,
 } from "./utils";
 
@@ -73,18 +73,21 @@ describe("Readonly", () => {
     } as unknown as ExtensionAPI);
 
     const prompts: string[] = [];
-    const steerTitles: string[] = [];
+    const denyPrompts: {
+      title: string;
+      placeholder: string | undefined;
+    }[] = [];
     const ctx = {
       hasUI: true,
       signal: new AbortController().signal,
       ui: {
         select: async (title: string) => {
           prompts.push(title);
-          return "Steer";
+          return "Deny";
         },
         custom: async () => undefined,
-        input: async (title: string) => {
-          steerTitles.push(title);
+        input: async (title: string, placeholder?: string) => {
+          denyPrompts.push({ title, placeholder });
           return "";
         },
       },
@@ -118,7 +121,10 @@ describe("Readonly", () => {
       "Readonly: apply write to src/unsafe target file.ts?",
     );
     expect(prompts[1]).not.toMatch(/\p{C}/u);
-    expect(steerTitles[1]).toBe("Steer the agent — src/unsafe target file.ts");
+    expect(denyPrompts[1]).toEqual({
+      title: "Deny the change — src/unsafe target file.ts",
+      placeholder: "give a reason",
+    });
     expect(prompts[2]).toBe(`Readonly: apply edit to ${"a".repeat(118)}…?`);
     expect(prompts[2]!.length).toBeLessThanOrEqual(160);
     expect(prompts[2]).not.toMatch(/\p{C}/u);
@@ -161,8 +167,8 @@ describe("Readonly", () => {
     expect(formatReadonlyTarget("src/unsafe\nfile.ts")).toBe(
       "src/unsafe file.ts",
     );
-    expect(formatSteerTitle("src/index.ts")).toBe(
-      "Steer the agent — src/index.ts",
+    expect(formatDenyTitle("src/index.ts")).toBe(
+      "Deny the change — src/index.ts",
     );
     expect(parseReadonlyArgs("on")).toEqual({ kind: "set", value: true });
     expect(parseReadonlyArgs("off")).toEqual({ kind: "set", value: false });
@@ -172,10 +178,10 @@ describe("Readonly", () => {
     expect(resolveChoice({ choice: "Allow for session", message: "" })).toEqual(
       { block: false, disable: true },
     );
-    expect(resolveChoice({ choice: "Steer", message: "try again" })).toEqual({
+    expect(resolveChoice({ choice: "Deny", message: "try again" })).toEqual({
       block: true,
       reason:
-        "Edit not applied. User intercepted the proposed change and provided this feedback:\n\ntry again\n\nTake this into account. Incorporate this feedback before retrying.",
+        "Edit not applied. User denied the proposed change for this reason:\n\ntry again\n\nTake this reason into account before retrying.",
     });
   });
 });

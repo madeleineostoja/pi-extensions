@@ -68,7 +68,7 @@ Use a devcontainer, VM, remote sandbox, or equivalent external boundary for host
 
 ## Readonly
 
-Readonly controls only resolved `edit` and `write` calls. Pi shows its native edit/write preview first; Readonly then asks only for the action and target, with `Allow`, `Allow for session`, or `Steer`.
+Readonly controls only resolved `edit` and `write` calls. Pi shows its native edit/write preview first; Readonly then asks only for the action and target, with `Allow`, `Allow for session`, or `Deny`. Choosing `Deny` prompts for a reason, which is returned to the agent with the blocked change.
 
 | Control         | Effect                                          |
 | --------------- | ----------------------------------------------- |
