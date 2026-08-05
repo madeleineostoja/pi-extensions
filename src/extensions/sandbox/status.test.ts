@@ -53,12 +53,12 @@ describe("Sandbox status", () => {
     state.reset(policy);
     const denials = createSandboxDenialRecorder();
     syncSandboxStatus(ctx as never, state, true, denials);
-    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+    expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
       "<success>󰒃</success> <muted>sandbox</muted>",
     );
     denials.recordDirect({ tool: "write", reason: "outside workspace" });
     syncSandboxStatus(ctx as never, state, true, denials);
-    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+    expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
       "<warning>󰒃</warning> <warning>sandbox · 1 denied</warning>",
     );
     denials.recordBash({
@@ -68,12 +68,12 @@ describe("Sandbox status", () => {
       path: "/outside/workspace",
     });
     syncSandboxStatus(ctx as never, state, true, denials);
-    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+    expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
       "<warning>󰒃</warning> <warning>sandbox · 2 denied</warning>",
     );
     state.setEnabled(false);
     syncSandboxStatus(ctx as never, state, true, denials);
-    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+    expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
       "<warning>󰒃</warning> <warning>sandbox off · 2 denied</warning>",
     );
   });

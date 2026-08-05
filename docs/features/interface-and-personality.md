@@ -11,11 +11,11 @@ The footer presents a width-aware subset of:
 - active-branch cost across model switches;
 - prompt-cache hit rate;
 - context-window usage; and
-- ordered extension status such as Sandbox mode, Readonly mode, or pending Papercuts.
+- ordered extension status such as Readonly mode, Sandbox mode, or pending Papercuts.
 
 Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded; cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
 
-Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses. Sandbox becomes warning-yellow and shows its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
+A long Git branch yields to the complete model/cost/cache/context segment before the optional context-window detail is removed. Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses. Sandbox becomes warning-yellow and shows its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
 
 UI also owns the generic bounded Activity view. Processes, Subagents, and Implement publish source-qualified queued, running, or waiting work but keep ownership of their records, lifecycle, inspectors, cleanup, and terminal delivery; they remove settled work immediately. The full-width pending-work box has no history or count. Activity excludes prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry. A Subagent row may show current context usage and one already-bounded latest-assistant preview.
 

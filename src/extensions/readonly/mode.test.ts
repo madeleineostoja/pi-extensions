@@ -5,7 +5,12 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import { resolveChoice } from "./handler";
 import { registerReadonlyMode } from "./mode";
-import { extractToolPath, formatSteerTitle, parseReadonlyArgs } from "./utils";
+import {
+  extractToolPath,
+  formatReadonlyTarget,
+  formatSteerTitle,
+  parseReadonlyArgs,
+} from "./utils";
 
 type ToolCallHandler = (
   event: { toolName: string; input: unknown },
@@ -33,7 +38,7 @@ describe("Readonly", () => {
       ui: {
         select: async (title: string) => {
           prompt = title;
-          return "Accept";
+          return "Allow";
         },
         custom: async () => undefined,
         input: async () => undefined,
@@ -45,15 +50,68 @@ describe("Readonly", () => {
         toolName: "edit",
         input: {
           path: "src/index.ts",
-          edits: [{ oldText: "before", newText: "proposed" }],
+          edits: [{ oldText: "before", newText: "proposed\n\u001b[2Jsource" }],
         },
       },
       ctx,
     );
 
-    expect(prompt).toContain(
-      "Readonly: apply proposed edit?\n\nProposed edit for src/index.ts:",
+    expect(prompt).toBe("Readonly: apply edit to src/index.ts?");
+    expect(prompt).not.toContain("proposed");
+  });
+
+  it("bounds and normalizes target paths before prompting", async () => {
+    let toolCall: ToolCallHandler | undefined;
+    registerReadonlyMode({
+      registerShortcut: () => {},
+      registerCommand: () => {},
+      on: (event: string, handler: unknown) => {
+        if (event === "tool_call") {
+          toolCall = handler as ToolCallHandler;
+        }
+      },
+    } as unknown as ExtensionAPI);
+
+    const prompts: string[] = [];
+    const steerTitles: string[] = [];
+    const ctx = {
+      hasUI: true,
+      signal: new AbortController().signal,
+      ui: {
+        select: async (title: string) => {
+          prompts.push(title);
+          return "Steer";
+        },
+        custom: async () => undefined,
+        input: async (title: string) => {
+          steerTitles.push(title);
+          return "";
+        },
+      },
+    } as unknown as ExtensionContext;
+
+    await toolCall?.(
+      {
+        toolName: "edit",
+        input: { path: `src/${"very-long-directory/".repeat(10)}target.ts` },
+      },
+      ctx,
     );
+    await toolCall?.(
+      {
+        toolName: "write",
+        input: { path: "src/unsafe\u0000target\nfile.ts" },
+      },
+      ctx,
+    );
+
+    expect(prompts[0]).toMatch(/^Readonly: apply edit to .+…\?$/);
+    expect(prompts[0]!.length).toBeLessThanOrEqual(160);
+    expect(prompts[1]).toBe(
+      "Readonly: apply write to src/unsafe target file.ts?",
+    );
+    expect(prompts[1]).not.toMatch(/\p{C}/u);
+    expect(steerTitles[1]).toBe("Steer the agent — src/unsafe target file.ts");
   });
 
   it("clears its namespaced status at shutdown", async () => {
@@ -83,20 +141,31 @@ describe("Readonly", () => {
     } as unknown as ExtensionContext);
 
     expect(setStatus).toHaveBeenCalledWith(
-      "pipkin:status:0200:readonly",
+      "pipkin:status:0100:readonly",
       undefined,
     );
   });
 
   it("keeps approval context concise and command semantics stable", () => {
     expect(extractToolPath({ path: "src/index.ts" })).toBe("src/index.ts");
+    expect(formatReadonlyTarget("src/unsafe\nfile.ts")).toBe(
+      "src/unsafe file.ts",
+    );
     expect(formatSteerTitle("src/index.ts")).toBe(
       "Steer the agent — src/index.ts",
     );
     expect(parseReadonlyArgs("on")).toEqual({ kind: "set", value: true });
     expect(parseReadonlyArgs("off")).toEqual({ kind: "set", value: false });
-    expect(
-      resolveChoice({ choice: "Accept for this session", message: "" }),
-    ).toEqual({ block: false, disable: true });
+    expect(resolveChoice({ choice: "Allow", message: "" })).toEqual({
+      block: false,
+    });
+    expect(resolveChoice({ choice: "Allow for session", message: "" })).toEqual(
+      { block: false, disable: true },
+    );
+    expect(resolveChoice({ choice: "Steer", message: "try again" })).toEqual({
+      block: true,
+      reason:
+        "Edit not applied. User intercepted the proposed change and provided this feedback:\n\ntry again\n\nTake this into account. Incorporate this feedback before retrying.",
+    });
   });
 });

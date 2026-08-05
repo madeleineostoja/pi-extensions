@@ -57,12 +57,14 @@ function commandFixture(supportedMac: boolean) {
 function panelFixture(options: {
   supportedMac: boolean;
   unavailable?: boolean;
+  writeMode?: "workspace-write" | "repository-read-only";
 }) {
   initTheme("dark");
   const state = createSandboxSessionState();
   state.reset(
     options.unavailable ? undefined : policy,
     "initialization failed",
+    options.writeMode,
   );
   const denials = createSandboxDenialRecorder();
   const done = vi.fn();
@@ -87,41 +89,83 @@ function panelFixture(options: {
     denials,
     supportedMac: options.supportedMac,
   });
-  return { done, panel, requestRender, state };
+  return { done, panel, requestRender, notify, state, denials };
+}
+
+function moveDown(panel: SandboxPanel, count = 1): void {
+  for (let index = 0; index < count; index += 1) {
+    panel.handleInput("\x1b[B");
+  }
+}
+
+function select(panel: SandboxPanel): void {
+  panel.handleInput("\r");
 }
 
 describe("Sandbox command", () => {
-  it("shows truthful direct and Bash scopes plus bounded denial records", () => {
-    const state = createSandboxSessionState();
-    const denials = createSandboxDenialRecorder();
-    state.reset(policy);
-    denials.recordDirect({
+  it("uses a quiet selectable main menu with the approved rows", () => {
+    const { panel } = panelFixture({ supportedMac: true });
+    const rendered = panel.render(120).join("\n");
+
+    expect(rendered).toContain("Mode");
+    expect(rendered).toContain("Confirmed denials");
+    expect(rendered).toContain("Policy details");
+    expect(rendered).not.toContain("Type to search");
+    expect(rendered).not.toContain("navigate");
+    expect(rendered).not.toContain("? help");
+    panel.dispose();
+  });
+
+  it("renders newest denials as a wide list and opens labeled direct and Bash details", () => {
+    const fixture = panelFixture({ supportedMac: true });
+    fixture.denials.recordDirect({
       tool: "write",
       requestedPath: "outside.ts",
       target: "/outside.ts",
       reason: "outside workspace",
     });
-    denials.recordBash({
+    fixture.denials.recordBash({
       process: "node",
       pid: 42,
       operation: "file-write-create",
-      path: "/private/file",
+      path: "/workspace/generated/file.ts",
     });
 
-    expect(sandboxPanelDetail(state, true, denials)).toBe(
-      "State: on\n" +
-        "Direct write/edit scope: /workspace\n" +
-        "Sandbox Bash write scopes:\n  /workspace\n  /git\n  /temporary\n  /cache\n" +
-        "Confirmed denials: 2\nRecent denials:\n" +
-        "direct write · requested outside.ts · target /outside.ts · outside workspace\n" +
-        "bash node (pid 42) · file-write-create · /private/file",
+    moveDown(fixture.panel);
+    select(fixture.panel);
+    const rows = fixture.panel.render(120).join("\n");
+    expect(rows).toContain("bash/node");
+    expect(rows).toContain("file-write-create");
+    expect(rows).toContain("generated/file.ts");
+    expect(rows.indexOf("bash/node")).toBeLessThan(
+      rows.indexOf("direct/write"),
     );
+
+    select(fixture.panel);
+    const bashDetail = fixture.panel.render(120).join("\n");
+    expect(bashDetail).toContain("Time:");
+    expect(bashDetail).toContain("Process: node");
+    expect(bashDetail).toContain("PID: 42");
+    expect(bashDetail).toContain("Operation: file-write-create");
+    expect(bashDetail).toContain("Path: /workspace/generated/file.ts");
+
+    fixture.panel.handleInput("\u001b");
+    moveDown(fixture.panel);
+    select(fixture.panel);
+    const directDetail = fixture.panel.render(120).join("\n");
+    expect(directDetail).toContain("Requested: outside.ts");
+    expect(directDetail).toContain("Resolved: /outside.ts");
+    expect(directDetail).toContain("Reason: outside workspace");
+    expect(directDetail).not.toContain("{");
+    fixture.panel.dispose();
   });
 
-  it("reports repository-read-only effective authorities rather than base workspace writes", () => {
-    const state = createSandboxSessionState();
-    const denials = createSandboxDenialRecorder();
-    state.reset(
+  it("shows effective repository-read-only authority in policy details", () => {
+    const fixture = panelFixture({
+      supportedMac: true,
+      writeMode: "repository-read-only",
+    });
+    fixture.state.reset(
       {
         ...policy,
         git: {
@@ -143,32 +187,89 @@ describe("Sandbox command", () => {
       "repository-read-only",
     );
 
-    expect(sandboxPanelDetail(state, true, denials)).toBe(
-      "State: on (repository-read-only child)\n" +
-        "Direct write/edit scope: repository mutation denied\n" +
-        "Sandbox Bash write scopes:\n  /temporary\n  /cache\n" +
-        "Confirmed denials: 0",
+    moveDown(fixture.panel, 2);
+    select(fixture.panel);
+    const policyDetail = fixture.panel.render(120).join("\n");
+    expect(policyDetail).toContain("Mode: on (repository-read-only child)");
+    expect(policyDetail).toContain(
+      "Direct write/edit scope: repository mutation denied",
     );
+    expect(policyDetail).toContain("Bash writable roots: /temporary, /cache");
+    expect(policyDetail).not.toContain("/workspace/node_modules");
+    fixture.panel.dispose();
   });
 
-  it("opens only a TUI custom panel and reports a bounded non-TUI fallback", async () => {
+  it("refreshes active denial views and unsubscribes once when closed", () => {
+    const fixture = panelFixture({ supportedMac: true });
+    moveDown(fixture.panel);
+    select(fixture.panel);
+    const before = fixture.requestRender.mock.calls.length;
+    fixture.denials.recordDirect({ tool: "edit", reason: "outside workspace" });
+    expect(fixture.requestRender.mock.calls.length).toBeGreaterThan(before);
+    expect(fixture.panel.render(120).join("\n")).toContain("direct/edit");
+
+    fixture.panel.handleInput("\u001b");
+    fixture.panel.handleInput("\u001b");
+    expect(fixture.done).toHaveBeenCalledOnce();
+    const afterClose = fixture.requestRender.mock.calls.length;
+    fixture.denials.recordDirect({ tool: "write", reason: "later" });
+    expect(fixture.requestRender).toHaveBeenCalledTimes(afterClose);
+    fixture.panel.dispose();
+  });
+
+  it("keeps the displayed mode truthful after rejected changes", () => {
+    const fixture = panelFixture({ supportedMac: true, unavailable: true });
+    select(fixture.panel);
+    expect(fixture.state.enabled()).toBe(false);
+    expect(fixture.panel.render(100).join("\n")).toContain("Off");
+    select(fixture.panel);
+    expect(fixture.state.enabled()).toBe(false);
+    expect(fixture.panel.render(100).join("\n")).toContain("Off");
+    expect(fixture.notify).toHaveBeenLastCalledWith(
+      "sandbox: unavailable; reload to retry initialization",
+      "warning",
+    );
+    moveDown(fixture.panel, 2);
+    select(fixture.panel);
+    expect(fixture.panel.render(100).join("\n")).toContain(
+      "Direct write/edit scope: unrestricted (Sandbox off)",
+    );
+    fixture.panel.dispose();
+  });
+
+  it("keeps direct commands and bounded non-TUI diagnostics truthful", async () => {
     const fixture = commandFixture(true);
     await fixture.handler("", fixture.ctx);
     expect(fixture.custom).toHaveBeenCalledOnce();
-
-    await fixture.handler("", { ...fixture.ctx, mode: "rpc" });
-    expect(fixture.notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("State: on"),
-      "info",
-    );
-  });
-
-  it("changes supported mode directly and rejects unavailable enabling", async () => {
-    const fixture = commandFixture(true);
     await fixture.handler("off", fixture.ctx);
     expect(fixture.state.enabled()).toBe(false);
     await fixture.handler("on", fixture.ctx);
     expect(fixture.state.enabled()).toBe(true);
+
+    fixture.denials.recordDirect({
+      tool: "write",
+      requestedPath: "outside.ts",
+      target: "/outside.ts",
+      reason: "outside workspace",
+    });
+    fixture.denials.recordBash({
+      process: "node",
+      pid: 42,
+      operation: "file-write-create",
+      path: "/private/file",
+    });
+    expect(sandboxPanelDetail(fixture.state, true, fixture.denials)).toContain(
+      "Mode: on",
+    );
+    expect(sandboxPanelDetail(fixture.state, true, fixture.denials)).toContain(
+      "bash node (pid 42)",
+    );
+
+    await fixture.handler("", { ...fixture.ctx, mode: "rpc" });
+    expect(fixture.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("Confirmed denials: 2"),
+      "info",
+    );
 
     const unsupported = commandFixture(false);
     await unsupported.handler("on", unsupported.ctx);
@@ -176,43 +277,5 @@ describe("Sandbox command", () => {
       "sandbox: unavailable on this platform",
       "warning",
     );
-  });
-
-  it("closes every panel once without relying on SettingsList", () => {
-    for (const fixture of [
-      panelFixture({ supportedMac: true }),
-      panelFixture({ supportedMac: false }),
-      panelFixture({ supportedMac: true, unavailable: true }),
-    ]) {
-      fixture.panel.handleInput("\u001b");
-      fixture.panel.handleInput("\u001b");
-      expect(fixture.done).toHaveBeenCalledOnce();
-      fixture.panel.dispose();
-    }
-  });
-
-  it("shows unavailable initialization truthfully and lets supported macOS turn it off", () => {
-    const fixture = panelFixture({ supportedMac: true, unavailable: true });
-
-    expect(fixture.panel.render(100).join("\n")).toContain(
-      "State: unavailable",
-    );
-    fixture.panel.handleInput("\r");
-
-    expect(fixture.state.enabled()).toBe(false);
-    expect(fixture.panel.render(100).join("\n")).toContain("State: off");
-    fixture.panel.dispose();
-  });
-
-  it("keeps the setting truthful after a rejected enable and renders SettingsList input", () => {
-    const fixture = panelFixture({ supportedMac: true, unavailable: true });
-    fixture.panel.handleInput("\r");
-    expect(fixture.state.enabled()).toBe(false);
-    fixture.panel.handleInput("\r");
-
-    expect(fixture.state.enabled()).toBe(false);
-    expect(fixture.panel.render(100).join("\n")).toContain("off");
-    expect(fixture.requestRender).toHaveBeenCalled();
-    fixture.panel.dispose();
   });
 });

@@ -84,10 +84,10 @@ describe("Sandbox lifecycle", () => {
     expect(state.enabled()).toBe(true);
     expect(state.policy()).toBe(policy);
     expect(watched.start).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain("sandbox");
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain("sandbox");
     await session.sessionShutdown(ctx as never);
     expect(watched.dispose).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toBeUndefined();
   });
 
   it("keeps macOS Bash fail-closed when policy resolution fails", async () => {
@@ -104,7 +104,7 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
       "unavailable",
     );
     expect(state.enabled()).toBe(true);
@@ -143,7 +143,7 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(createDenialObserver).not.toHaveBeenCalled();
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
       "unavailable",
     );
     await session.sessionShutdown(ctx as never);
@@ -208,12 +208,12 @@ describe("Sandbox lifecycle", () => {
     await session.sessionStart({} as never, ctx as never);
     denials.recordDirect({ tool: "write", reason: "blocked" });
 
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
       "sandbox · 1 denied",
     );
     await session.sessionShutdown(ctx as never);
     denials.recordDirect({ tool: "write", reason: "later" });
-    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
+    expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toBeUndefined();
   });
 
   it("resets session diagnostics and replaces the observer on restart", async () => {

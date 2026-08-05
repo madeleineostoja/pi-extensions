@@ -3,7 +3,7 @@ import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
 import type { SandboxDenialRecorder } from "./denials.js";
 import type { SandboxSessionState } from "./state.js";
 
-const SANDBOX_STATUS = { id: "sandbox", priority: 100, icon: "󰒃" } as const;
+const SANDBOX_STATUS = { id: "sandbox", priority: 200, icon: "󰒃" } as const;
 
 export type SandboxStatus = "on" | "off" | "unavailable";
 

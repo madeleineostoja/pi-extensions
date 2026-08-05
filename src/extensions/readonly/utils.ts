@@ -11,41 +11,26 @@ export function extractToolPath(input: unknown): string | undefined {
   return typeof path === "string" && path ? path : undefined;
 }
 
-export function formatSteerTitle(path: string | undefined): string {
-  return path ? `Steer the agent — ${path}` : "Steer the agent";
+const MAX_TARGET_DISPLAY_LENGTH = 120;
+const CONTROL_PATTERN = /\p{C}/gu;
+
+export function formatReadonlyTarget(
+  path: string | undefined,
+): string | undefined {
+  const normalized = path
+    ?.replace(CONTROL_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.length <= MAX_TARGET_DISPLAY_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_TARGET_DISPLAY_LENGTH - 1)}…`;
 }
 
-export function formatProposalDetail(
-  tool: "write" | "edit",
-  path: string | undefined,
-  input: unknown,
-): string {
-  const boundedText = (value: string, limit: number) =>
-    Array.from(value, (character) =>
-      /\p{C}/u.test(character) ? "�" : character,
-    )
-      .join("")
-      .slice(0, limit);
-  const target = boundedText(path ?? "an unspecified path", 256);
-  const raw =
-    input && typeof input === "object"
-      ? tool === "write"
-        ? (input as { content?: unknown }).content
-        : (input as { edits?: unknown }).edits
-      : undefined;
-  let proposal = "";
-  try {
-    proposal =
-      typeof raw === "string"
-        ? raw
-        : raw === undefined
-          ? ""
-          : (JSON.stringify(raw) ?? "");
-  } catch {}
-  const bounded = boundedText(proposal, 3_000);
-  return bounded
-    ? `Proposed ${tool} for ${target}:\n\n${bounded}`
-    : `Proposed ${tool} for ${target}.`;
+export function formatSteerTitle(path: string | undefined): string {
+  return path ? `Steer the agent — ${path}` : "Steer the agent";
 }
 
 export function parseReadonlyArgs(args: string): ReadonlyAction {

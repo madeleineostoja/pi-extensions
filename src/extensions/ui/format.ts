@@ -64,18 +64,36 @@ export function formatContextPercent(
   return theme.fg(getContextColor(percent), `${num}%`);
 }
 
+export type FooterLeftSegment = Readonly<{
+  repository: string;
+  branch?: string;
+}>;
+
+export function buildFooterLeftSegment(
+  cwd: string,
+  branch: string | null,
+  theme: Theme,
+): FooterLeftSegment {
+  const name = basename(cwd) || cwd;
+  return {
+    repository: theme.bold(theme.fg("accent", name)),
+    ...(branch
+      ? {
+          branch: `${theme.fg("dim", "on")} ${theme.bold(
+            theme.fg("accent", ` ${branch}`),
+          )}`,
+        }
+      : {}),
+  };
+}
+
 export function buildLeftSegment(
   cwd: string,
   branch: string | null,
   theme: Theme,
 ): string {
-  const name = basename(cwd) || cwd;
-  const base = theme.bold(theme.fg("accent", name));
-  if (!branch) {
-    return base;
-  }
-  const gitBranch = theme.bold(theme.fg("accent", ` ${branch}`));
-  return `${base} ${theme.fg("dim", "on")} ${gitBranch}`;
+  const left = buildFooterLeftSegment(cwd, branch, theme);
+  return left.branch ? `${left.repository} ${left.branch}` : left.repository;
 }
 
 export function formatCacheHitRate(rate: number): string {
@@ -206,44 +224,90 @@ export function buildStatusLine(
   return sorted.join("  ");
 }
 
+const MIN_BRANCH_WIDTH = 12;
+
+function renderFooterLeft(
+  left: string | FooterLeftSegment,
+  branchWidth?: number,
+): string {
+  if (typeof left === "string") {
+    return left;
+  }
+  if (!left.branch || branchWidth === undefined) {
+    return left.branch ? `${left.repository} ${left.branch}` : left.repository;
+  }
+  return `${left.repository} ${truncateToWidth(left.branch, branchWidth)}`;
+}
+
 export function buildFooterLines(
   width: number,
-  left: string,
+  left: string | FooterLeftSegment,
   rightWithWindow: string,
   rightWithoutWindow: string,
   statuses: ReadonlyMap<string, string>,
   theme: Theme,
 ): string[] {
   const lines: string[] = [];
-  const leftWidth = visibleWidth(left);
+  const fullLeft = renderFooterLeft(left);
   const minGap = 2;
 
-  const tryFit = (right: string): boolean => {
-    const rightWidth = visibleWidth(right);
-    return leftWidth + minGap + rightWidth <= width;
+  const fitBranch = (right: string): string | undefined => {
+    if (typeof left === "string" || !left.branch) {
+      return undefined;
+    }
+    const available =
+      width - visibleWidth(left.repository) - 1 - minGap - visibleWidth(right);
+    if (available < MIN_BRANCH_WIDTH) {
+      return undefined;
+    }
+    return renderFooterLeft(left, available);
   };
 
-  let chosenRight: string;
-  if (tryFit(rightWithWindow)) {
-    chosenRight = rightWithWindow;
-  } else if (tryFit(rightWithoutWindow)) {
-    chosenRight = rightWithoutWindow;
+  const chooseRight = (): { left: string; right: string } | undefined => {
+    if (
+      visibleWidth(fullLeft) + minGap + visibleWidth(rightWithWindow) <=
+      width
+    ) {
+      return { left: fullLeft, right: rightWithWindow };
+    }
+    const branchWithWindow = fitBranch(rightWithWindow);
+    if (branchWithWindow) {
+      return { left: branchWithWindow, right: rightWithWindow };
+    }
+    if (
+      visibleWidth(fullLeft) + minGap + visibleWidth(rightWithoutWindow) <=
+      width
+    ) {
+      return { left: fullLeft, right: rightWithoutWindow };
+    }
+    const branchWithoutWindow = fitBranch(rightWithoutWindow);
+    return branchWithoutWindow
+      ? { left: branchWithoutWindow, right: rightWithoutWindow }
+      : undefined;
+  };
+
+  const chosen = chooseRight();
+  if (chosen) {
+    const gap = " ".repeat(
+      Math.max(
+        0,
+        width - visibleWidth(chosen.left) - visibleWidth(chosen.right),
+      ),
+    );
+    lines.push(chosen.left + gap + chosen.right);
   } else {
+    const leftWidth = visibleWidth(fullLeft);
     const availableForRight = Math.max(0, width - leftWidth - minGap);
     if (availableForRight > 0) {
-      chosenRight = truncateToWidth(rightWithoutWindow, availableForRight, "");
+      lines.push(
+        fullLeft +
+          " ".repeat(Math.max(0, width - leftWidth - availableForRight)) +
+          truncateToWidth(rightWithoutWindow, availableForRight, ""),
+      );
     } else {
-      lines.push(truncateToWidth(left, width));
-      if (statuses.size > 0) {
-        lines.push(truncateToWidth(buildStatusLine(statuses, theme), width));
-      }
-      return lines;
+      lines.push(truncateToWidth(fullLeft, width));
     }
   }
-
-  const rightWidth = visibleWidth(chosenRight);
-  const gap = " ".repeat(Math.max(0, width - leftWidth - rightWidth));
-  lines.push(left + gap + chosenRight);
 
   if (statuses.size > 0) {
     const statusLine = buildStatusLine(statuses, theme);

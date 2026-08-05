@@ -20,13 +20,13 @@ Sandbox starts enabled for macOS main sessions. Child sessions resolve policy fr
 
 ## Sandbox controls
 
-| Command        | Effect                                                                                       |
-| -------------- | -------------------------------------------------------------------------------------------- |
-| `/sandbox`     | Show current state, direct-tool scope, Bash writable roots, and bounded write-denial history |
-| `/sandbox on`  | Enable protection for later model Bash/direct-tool calls in the current session              |
-| `/sandbox off` | Disable protection for later calls and children spawned afterward                            |
+| Command        | Effect                                                                                             |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `/sandbox`     | Open Mode, confirmed-denial, and policy controls; inspect bounded write denials and labeled detail |
+| `/sandbox on`  | Enable protection for later model Bash/direct-tool calls in the current session                    |
+| `/sandbox off` | Disable protection for later calls and children spawned afterward                                  |
 
-The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial.
+The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial. `/sandbox` lists recent denials newest first; its policy page reports effective authority, so repository-read-only children list only their writable temporary/cache roots.
 
 On macOS, model Bash runs through `/usr/bin/sandbox-exec`. Workspace-write mode admits the canonical repository workspace, required Git administration, canonical temporary roots, and reviewed npm, pnpm, and GitHub CLI cache/state roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
 
@@ -68,7 +68,7 @@ Use a devcontainer, VM, remote sandbox, or equivalent external boundary for host
 
 ## Readonly
 
-Readonly controls only resolved `edit` and `write` calls.
+Readonly controls only resolved `edit` and `write` calls. Pi shows its native edit/write preview first; Readonly then asks only for the action and target, with `Allow`, `Allow for session`, or `Steer`.
 
 | Control         | Effect                                          |
 | --------------- | ----------------------------------------------- |

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   buildFooterLines,
+  buildFooterLeftSegment,
   buildLeftSegment,
   buildRightSegment,
   buildStatusLine,
@@ -233,11 +234,11 @@ describe("status line sanitization", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
-        ["pipkin:status:0100:sandbox", "sandbox-status"],
+        ["pipkin:status:0200:sandbox", "sandbox-status"],
         ["pipkin:status:0050:other", "other-status"],
         ["pipkin:status:0300:papercuts", "papercuts-status"],
         ["a", "a-status"],
-        ["pipkin:status:0200:readonly", "readonly-status"],
+        ["pipkin:status:0100:readonly", "readonly-status"],
       ]),
       makePlainTheme(),
     );
@@ -245,10 +246,10 @@ describe("status line sanitization", () => {
     expect(result.indexOf("other-status")).toBeLessThan(
       result.indexOf("sandbox-status"),
     );
-    expect(result.indexOf("sandbox-status")).toBeLessThan(
-      result.indexOf("readonly-status"),
-    );
     expect(result.indexOf("readonly-status")).toBeLessThan(
+      result.indexOf("sandbox-status"),
+    );
+    expect(result.indexOf("sandbox-status")).toBeLessThan(
       result.indexOf("papercuts-status"),
     );
     expect(result.indexOf("papercuts-status")).toBeLessThan(
@@ -290,7 +291,40 @@ describe("footer line layout", () => {
     expect(lines[0]).toBe("left" + " ".repeat(11) + "right");
   });
 
-  it("drops the window suffix before truncating", () => {
+  it("truncates a long branch before dropping right-side context detail", () => {
+    const theme = makePlainTheme();
+    const left = buildFooterLeftSegment(
+      "/workspace/repository",
+      "feature/a-very-long-branch-name",
+      theme,
+    );
+    const rightWithWindow = "Model (high) · $0.04 · 󰃨 76% · 50% (128k)";
+    const rightWithoutWindow = "Model (high) · $0.04 · 󰃨 76% · 50%";
+    const wide = buildFooterLines(
+      120,
+      left,
+      rightWithWindow,
+      rightWithoutWindow,
+      new Map(),
+      theme,
+    );
+    const longBranch = buildFooterLines(
+      70,
+      left,
+      rightWithWindow,
+      rightWithoutWindow,
+      new Map(),
+      theme,
+    );
+
+    expect(wide[0]).toContain("feature/a-very-long-branch-name");
+    expect(wide[0]).toContain("50% (128k)");
+    expect(longBranch[0]).toContain("repository on ");
+    expect(longBranch[0]).toContain("50% (128k)");
+    expect(longBranch[0]).not.toContain("feature/a-very-long-branch-name");
+  });
+
+  it("drops the window suffix only after the branch reaches its minimum", () => {
     const lines = buildFooterLines(
       "left".length + 2 + "right-wo".length,
       "left",
@@ -302,6 +336,24 @@ describe("footer line layout", () => {
 
     expect(lines[0]).toContain("right-wo");
     expect(lines[0]).not.toContain("right-with-window");
+  });
+
+  it("keeps the existing severe-width fallback after branch and window fitting", () => {
+    const lines = buildFooterLines(
+      22,
+      buildFooterLeftSegment(
+        "/workspace/repository",
+        "feature/a-very-long-branch-name",
+        makePlainTheme(),
+      ),
+      "Model (high) · 50% (128k)",
+      "Model (high) · 50%",
+      new Map(),
+      makePlainTheme(),
+    );
+
+    expect(lines[0]).toContain("repository on ");
+    expect(lines[0]).not.toContain("50% (128k)");
   });
 
   it("truncates overlong footer content", () => {

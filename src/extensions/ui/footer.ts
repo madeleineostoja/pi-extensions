@@ -6,7 +6,7 @@ import type {
 import { getAverageCacheHitRate, getFooterCostInfo } from "./cost.js";
 import {
   buildFooterLines,
-  buildLeftSegment,
+  buildFooterLeftSegment,
   buildRightSegment,
 } from "./format.js";
 
@@ -26,7 +26,7 @@ export function installFooter(pi: ExtensionAPI): void {
           invalidate() {},
           render(width: number): string[] {
             const branch = footerData.getGitBranch();
-            const left = buildLeftSegment(ctx.cwd, branch, theme);
+            const left = buildFooterLeftSegment(ctx.cwd, branch, theme);
 
             const model = ctx.model;
             const thinkingLevel = pi.getThinkingLevel();

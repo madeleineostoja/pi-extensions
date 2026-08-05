@@ -10,10 +10,10 @@ export function resolveChoice(params: {
   choice: string | undefined;
   message: string | undefined;
 }): ResolveChoiceResult {
-  if (params.choice === "Accept") {
+  if (params.choice === "Allow") {
     return { block: false };
   }
-  if (params.choice === "Accept for this session") {
+  if (params.choice === "Allow for session") {
     return { block: false, disable: true };
   }
   return { block: true, reason: formatSteer(params.message ?? "") };

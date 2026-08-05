@@ -8,11 +8,11 @@ import { resolveChoice } from "./handler";
 import {
   parseReadonlyArgs,
   extractToolPath,
-  formatProposalDetail,
+  formatReadonlyTarget,
   formatSteerTitle,
 } from "./utils";
 
-const READONLY_STATUS = { id: "readonly", priority: 200 } as const;
+const READONLY_STATUS = { id: "readonly", priority: 100 } as const;
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
@@ -80,15 +80,14 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
       return undefined;
     }
 
-    const path = extractToolPath(event.input);
+    const path = formatReadonlyTarget(extractToolPath(event.input));
     const permission = await promptForPermission({
       ui: ctx.ui,
       signal: ctx.signal,
-      title: `Readonly: apply proposed ${event.toolName}?`,
-      detail: formatProposalDetail(event.toolName, path, event.input),
+      title: `Readonly: apply ${event.toolName} to ${path ?? "an unspecified target"}?`,
       choices: [
-        { value: "Accept", label: "Accept" },
-        { value: "Accept for this session", label: "Accept for this session" },
+        { value: "Allow", label: "Allow" },
+        { value: "Allow for session", label: "Allow for session" },
         {
           value: "Steer",
           label: "Steer",
