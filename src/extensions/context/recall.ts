@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
 import { Text } from "@earendil-works/pi-tui";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
 import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, hasRetainedResult } from "./retained-result.ts";
@@ -201,42 +202,32 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         0,
       );
     },
-    renderResult(result, options, theme, context) {
-      if (context.isError || options.isPartial) {
-        return new Text(
-          theme.fg(
-            context.isError ? "error" : "warning",
-            firstText(result.content),
-          ),
-          0,
-          0,
-        );
-      }
-      const details = renderDetails(result.details);
-      const source = details?.source;
-      const target = source?.target ?? "content";
-      const summary = selectorSummary(details?.selector);
-      const lines = [
-        `${theme.fg("success", "Recalled")} ${theme.fg("accent", target)}${summary === "" ? "" : ` · ${theme.fg("muted", summary)}`}`,
-      ];
-      if (options.expanded) {
-        if (source?.toolName) {
-          lines.push(theme.fg("dim", `source tool: ${source.toolName}`));
-        }
-        if (source?.fullToolCallId) {
-          lines.push(theme.fg("dim", `tool call ID: ${source.fullToolCallId}`));
-        }
-        const accounting = selectorAccounting(details?.selector);
-        if (accounting) {
-          lines.push(theme.fg("dim", accounting));
-        }
-        const content = renderedContent(result.content);
-        if (content) {
-          lines.push(theme.fg("toolOutput", content));
-        }
-      }
-      return new Text(lines.join("\n"), 0, 0);
-    },
+    renderResult: toolResultRenderer({
+      summary(result) {
+        const details = renderDetails(result.details);
+        const source = details?.source;
+        const selector = selectorSummary(details?.selector);
+        return `Recalled ${source?.toolName ?? source?.target ?? "content"}${selector ? ` · ${selector}` : ""}`;
+      },
+      partial() {
+        return "Recalling retained content…";
+      },
+      error(result) {
+        return firstText(result.content).split("\n", 1)[0] ?? "Recall failed.";
+      },
+      expandedDetails(result) {
+        const details = renderDetails(result.details);
+        const source = details?.source;
+        return [
+          source?.toolName ? `source tool: ${source.toolName}` : undefined,
+          source?.target ? `source target: ${source.target}` : undefined,
+          source?.fullToolCallId
+            ? `tool call ID: ${source.fullToolCallId}`
+            : undefined,
+          selectorAccounting(details?.selector),
+        ].filter((line): line is string => line !== undefined);
+      },
+    }),
   });
 }
 
@@ -723,7 +714,7 @@ function selectorSummary(selector: RenderSelector | undefined): string {
       return "no matches";
     }
     return Number.isSafeInteger(selector.totalMatches)
-      ? `${selector.totalMatches} matches`
+      ? `${selector.totalMatches} matches${selector.find ? ` for “${formatSearchQuery(selector.find)}”` : ""}`
       : "literal search";
   }
   return "result";
@@ -771,20 +762,6 @@ function selectorAccounting(
     selector.outputTruncated ? "output truncated" : undefined,
   ].filter((detail): detail is string => detail !== undefined);
   return details.join(" · ");
-}
-
-function renderedContent(content: unknown): string | undefined {
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .filter(isTextBlock)
-    .map((block) => block.text)
-    .join("\n");
-  if (text) {
-    return text;
-  }
-  return content.length > 0 ? "Recalled non-text content." : undefined;
 }
 
 function firstText(content: unknown): string {

@@ -217,6 +217,13 @@ export function formatStatus(state: RunState): string {
 }
 
 export function inspectRun(checkoutRoot: string, runId: string): string {
+  return inspectRunSnapshot(checkoutRoot, runId).text;
+}
+
+export function inspectRunSnapshot(
+  checkoutRoot: string,
+  runId: string,
+): { text: string; state: RunState } {
   assertRunId(runId);
   const paths = checkoutPaths(checkoutRoot);
   const path = join(paths.runs, runId);
@@ -242,19 +249,22 @@ export function inspectRun(checkoutRoot: string, runId: string): string {
   const plannerAttempt = plannerAttemptPath(path);
   const artifacts = join(path, "artifacts");
   const worktree = join(paths.worktrees, runId);
-  return [
-    formatStatus(state),
-    [
-      "Paths:",
-      `- State: ${join(path, "run-state.json")}`,
-      `- Source plan: ${state.run.source.entry.path}`,
-      `- Planner attempt: ${plannerAttempt}${existsSync(plannerAttempt) ? "" : " (not retained)"}`,
-      `- Execution plan: ${executionPlan}${existsSync(executionPlan) ? "" : " (not retained)"}`,
-      `- Source corpus: ${sourceCorpus}${existsSync(sourceCorpus) ? "" : " (not retained)"}`,
-      `- Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
-      `- Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
-    ].join("\n"),
-  ].join("\n\n");
+  return {
+    state,
+    text: [
+      formatStatus(state),
+      [
+        "Paths:",
+        `- State: ${join(path, "run-state.json")}`,
+        `- Source plan: ${state.run.source.entry.path}`,
+        `- Planner attempt: ${plannerAttempt}${existsSync(plannerAttempt) ? "" : " (not retained)"}`,
+        `- Execution plan: ${executionPlan}${existsSync(executionPlan) ? "" : " (not retained)"}`,
+        `- Source corpus: ${sourceCorpus}${existsSync(sourceCorpus) ? "" : " (not retained)"}`,
+        `- Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
+        `- Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
+      ].join("\n"),
+    ].join("\n\n"),
+  };
 }
 
 export async function assertProspectiveRunPreflight(

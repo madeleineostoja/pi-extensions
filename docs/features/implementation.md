@@ -92,7 +92,7 @@ A crash-retained active run is terminalized as interrupted under the checkout le
 
 The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries.
 
-`inspect_implement_run` is the read-only model-facing inspection tool. Without `runId`, it lists retained runs in the current checkout; with `runId`, it summarizes that run and reports authoritative artifact paths for ordinary reads. Managed Implement workers cannot call it.
+`inspect_implement_run` is the read-only model-facing inspection tool. Without `runId`, it lists retained runs in the current checkout; with `runId`, it summarizes that run and reports authoritative artifact paths for ordinary reads. Its collapsed row identifies the retained run and point-in-time phase; expanding it shows the complete bounded inspection artifact. Managed Implement workers cannot call it.
 
 The shared Activity view shows active workstreams. `/agents` remains the detailed live and retained worker inspector.
 

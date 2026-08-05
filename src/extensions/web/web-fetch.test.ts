@@ -7,6 +7,7 @@ import { extractHtml } from "./extraction.js";
 import { normalizeInput } from "./schema.js";
 import { createInvocationDeadline, type WebTransport } from "./transport.js";
 import { executeWebFetch } from "./web-fetch.js";
+import { renderWebFetchResult } from "./result-renderer.js";
 
 function page(url: string, contentType: string, body: string): Response {
   const response = new Response(body, {
@@ -18,6 +19,42 @@ function page(url: string, contentType: string, body: string): Response {
 }
 
 describe("web_fetch", () => {
+  it("renders a semantic target summary and complete expanded content", () => {
+    const result = {
+      content: [{ type: "text" as const, text: "complete fetched body" }],
+      details: {
+        requestedUrl: "https://example.com/article",
+        finalUrl: "https://example.com/article",
+        output: "markdown",
+        contentType: "text/html",
+        contentChars: 21,
+      },
+    };
+    const theme = { fg: (_color: string, text: string) => text } as never;
+
+    const collapsed = renderWebFetchResult(
+      result,
+      { expanded: false, isPartial: false },
+      theme,
+      {},
+    )
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+    const expanded = renderWebFetchResult(
+      result,
+      { expanded: true, isPartial: false },
+      theme,
+      {},
+    )
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toContain("Fetched example.com/article.");
+    expect(collapsed).not.toContain("complete fetched body");
+    expect(expanded).toContain("complete fetched body");
+  });
   it("accepts only automatic output with an optional raw override", () => {
     expect(normalizeInput({ url: "https://example.com" })).toMatchObject({
       raw: false,

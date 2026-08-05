@@ -61,7 +61,7 @@ Detection does not depend on an accurate server content type. Set `raw: true` on
 | Batch aggregate deadline         |            120 seconds |
 | Combined batch result            | 48 KiB and 1,900 lines |
 
-Batch preserves request order, reserves status metadata for every item, divides output fairly, and marks omitted content. Individual failures can appear beside successes; a completely failed batch is an error.
+Batch preserves request order, reserves status metadata for every item, divides output fairly, and marks omitted content. Individual failures can appear beside successes; a completely failed batch is an error. Collapsed rows identify the target and response type or aggregate success counts; expanding a row retains the complete bounded response sections.
 
 ## Network and security boundaries
 

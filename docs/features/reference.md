@@ -10,7 +10,7 @@ Reference provides bounded external evidence through `docs`, `package_search`, a
 | `package_search` | Discovering candidates across documentation, npm, and public GitHub | Identity matching, deduplication, or recommendations            |
 | `code_search`    | Finding observed usage in credential-visible GitHub source          | Proof of correctness, authority, freshness, or package identity |
 
-Use Web Fetch for a known public URL and the GitHub tool or skill for broader repository, issue, pull-request, or Actions workflows. Reference never delegates research or automatically falls back between tools.
+Use Web Fetch for a known public URL and the GitHub tool or skill for broader repository, issue, pull-request, or Actions workflows. Reference never delegates research or automatically falls back between tools. Collapsed tool rows identify the query, selected documentation version, or provider result counts; expanding a row shows the complete bounded model-facing text.
 
 ## `docs`
 

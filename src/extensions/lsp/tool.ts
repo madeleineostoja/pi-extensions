@@ -8,6 +8,10 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  compactDisplayText,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { Type, type Static } from "typebox";
 import { RequestCancelledError, RequestTimeoutError } from "./protocol.js";
 import {
@@ -133,6 +137,19 @@ export function registerLsp(pi: ExtensionAPI): void {
     async execute(_toolCallId, input: LspInput, signal, _onUpdate, ctx) {
       return executeLsp(input, signal, ctx);
     },
+    renderResult: toolResultRenderer({
+      summary(result, context) {
+        return lspSummary(result.details, context.args, result);
+      },
+      partial() {
+        return "Querying language server…";
+      },
+      error(result) {
+        return (
+          firstText(result.content)?.split("\n", 1)[0] ?? "LSP request failed."
+        );
+      },
+    }),
   });
 }
 
@@ -757,4 +774,100 @@ function renderStatus(details: ToolDetails): {
 function conciseError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/\s+/g, " ").slice(0, 500);
+}
+
+function lspSummary(
+  details: unknown,
+  args: unknown,
+  result?: { content: unknown },
+): string[] {
+  const record = isRecord(details) ? details : {};
+  const action =
+    typeof record.action === "string"
+      ? record.action.replaceAll("_", " ")
+      : "request";
+  const target = lspTarget(args, action);
+  const heading = `LSP ${action}${target ? ` · ${target}` : ""}.`;
+  if (record.success === false) {
+    return [heading, lspFailureSummary(record, result?.content)];
+  }
+  if (action === "status") {
+    const count = Array.isArray(record.servers)
+      ? record.servers.length
+      : undefined;
+    return [
+      "LSP status.",
+      ...(count === undefined
+        ? []
+        : [`${count} server${count === 1 ? "" : "s"} reported.`]),
+    ];
+  }
+  const count = [record.locations, record.symbols, record.diagnostics].find(
+    Array.isArray,
+  )?.length;
+  return [
+    heading,
+    ...(count === undefined
+      ? []
+      : [`${count} result${count === 1 ? "" : "s"}.`]),
+  ];
+}
+
+function lspFailureSummary(
+  details: Record<string, unknown>,
+  content: unknown,
+): string {
+  if (details.stale === true) {
+    return details.timedOut === true
+      ? "Diagnostics are stale after the timeout."
+      : "Diagnostics are stale.";
+  }
+  if (details.unsupported === true) {
+    const server = compactDisplayText(details.server, 80);
+    return `The requested capability is unsupported${server ? ` by ${server}` : ""}.`;
+  }
+  if (details.available === false) {
+    const server = compactDisplayText(details.server, 80);
+    const reason = compactDisplayText(details.reason, 160);
+    return `${server ? `${server} server ` : "Server "}is unavailable${reason ? `: ${reason}` : ""}.`;
+  }
+  if (details.invalidPosition === true) {
+    return `Position could not be resolved: ${compactDisplayText(firstText(content), 160)}.`;
+  }
+  const reason = compactDisplayText(firstText(content), 160);
+  return reason ? `Request is invalid: ${reason}.` : "Request is invalid.";
+}
+
+function lspTarget(args: unknown, action: string): string | undefined {
+  if (!isRecord(args)) {
+    return undefined;
+  }
+  const file = compactDisplayText(args.file, 100);
+  const symbol = compactDisplayText(args.symbol, 100);
+  const query = compactDisplayText(args.query, 100);
+  if (action === "workspace symbols") {
+    return query ? `query “${query}”` : undefined;
+  }
+  if (symbol) {
+    return file ? `symbol “${symbol}” in ${file}` : `symbol “${symbol}”`;
+  }
+  return file || query || undefined;
+}
+
+function firstText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const text = content.find(
+    (block): block is { type: "text"; text: string } =>
+      typeof block === "object" &&
+      block !== null &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string",
+  );
+  return text?.text;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

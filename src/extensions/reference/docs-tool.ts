@@ -1,5 +1,6 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { loadContext7Auth } from "./auth.js";
 import { LIMITS, byteLength, hasControl, truncateBytes } from "./bounds.js";
 import {
@@ -45,6 +46,35 @@ export function registerDocs(pi: ExtensionAPI, agentDir: () => string): void {
     async execute(_toolCallId, input: DocsInput, signal) {
       return executeDocs(input, signal, { agentDir: agentDir() });
     },
+    renderResult: toolResultRenderer({
+      summary(result, context) {
+        const details = result.details as {
+          resolution?: { selectedId?: string };
+          version?: { state?: string; pin?: string };
+        };
+        const subject = (context.args as { subject?: string } | undefined)
+          ?.subject;
+        const version = details?.version;
+        return [
+          `Documentation · ${subject ?? details?.resolution?.selectedId ?? "library"}.`,
+          ...(version?.state === "exact-version" && version.pin
+            ? [`Version: ${version.pin}.`]
+            : version?.state === "provider-current"
+              ? ["Version: provider current."]
+              : []),
+        ];
+      },
+      partial() {
+        return "Retrieving documentation…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ||
+          "Documentation request failed."
+        );
+      },
+      content: "markdown",
+    }),
   });
 }
 
@@ -381,6 +411,21 @@ function buildResult(
   }
   return { content: [{ type: "text", text }], details };
 }
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return (
+    content.find(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )?.text ?? ""
+  );
+}
+
 function render(
   resolved: Resolved,
   question: string,

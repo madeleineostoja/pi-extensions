@@ -478,7 +478,7 @@ describe("context_recall", () => {
 
   it("renders source-aware recall accounting without changing recalled content", async () => {
     const entries = [
-      toolCall("bash-id", "bash", {
+      toolCall("bash-id", "bash_outcome", {
         command: [
           "printf first",
           "\u001b[31msecond\u001b[0m",
@@ -489,6 +489,8 @@ describe("context_recall", () => {
     ];
     const { definition, execute } = recall(entries);
     const result = await execute({ id: "bash-id", find: "second" });
+    const full = await execute({ id: "bash-id" });
+    const lines = await execute({ id: "bash-id", lines: "1-2" });
     const theme = {
       bold: (text: string) => text,
       fg: (_color: string, text: string) => text,
@@ -516,11 +518,27 @@ describe("context_recall", () => {
         .render(20)
         .every((line: string) => line.length <= 20),
     ).toBe(true);
-    expect(collapsed.replaceAll("\\n", " ").replace(/\s+/g, " ")).toContain(
-      "printf first second",
-    );
-    expect(collapsed.replace(/\s+/g, " ")).toContain("1 matches");
+    expect(collapsed).toContain("Recalled bash_outcome");
+    expect(collapsed).toContain("1 matches for “second”");
+    expect(collapsed).not.toContain("printf first");
+    expect(
+      definition
+        .renderResult(full, { expanded: false, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(120)
+        .join("\n"),
+    ).toContain("Recalled bash_outcome · full result");
+    expect(
+      definition
+        .renderResult(lines, { expanded: false, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(120)
+        .join("\n"),
+    ).toContain("Recalled bash_outcome · lines 1-2");
     expect(expanded).toContain("tool call ID: bash-id");
+    expect(expanded).toContain("source target: printf first second");
     expect(expanded).toContain("literal: second");
     expect(expanded).toContain("2 | second");
     expect(result.content).toEqual([

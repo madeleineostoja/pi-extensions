@@ -35,6 +35,73 @@ const observation = {
 };
 
 describe("record_papercut", () => {
+  it("renders a concise recorded key, title, and outcome", () => {
+    let tool: any;
+    registerRecordTool(
+      { registerTool: (definition: unknown) => (tool = definition) } as never,
+      createPapercutStatusController(),
+    );
+    const result = {
+      content: [
+        { type: "text" as const, text: "Papercut created: durable-key (1)" },
+      ],
+      details: {
+        outcome: "created",
+        key: "durable-key",
+        title: "Useful friction",
+        occurrences: 1,
+      },
+    };
+    const theme = { fg: (_color: string, text: string) => text };
+    const collapsed = tool
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+    const expanded = tool
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toContain("Recorded durable-key · Useful friction.");
+    expect(collapsed).toContain("Outcome: created.");
+    expect(expanded).toContain("Papercut created: durable-key (1)");
+  });
+  it("normalizes control characters and newlines in display-only record titles", () => {
+    let tool: any;
+    registerRecordTool(
+      { registerTool: (definition: unknown) => (tool = definition) } as never,
+      createPapercutStatusController(),
+    );
+    const theme = { fg: (_color: string, text: string) => text };
+    const text = tool
+      .renderResult(
+        {
+          content: [{ type: "text", text: "Papercut created" }],
+          details: {
+            outcome: "created",
+            key: "display-key",
+            title: "first line\n\u001b[31msecond line",
+          },
+        },
+        { expanded: false, isPartial: false },
+        theme,
+        { isError: false },
+      )
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+
+    expect(text).toBe(
+      "Recorded display-key · first line second line.\nOutcome: created.",
+    );
+  });
+
   it("registers the bounded factual incident schema and eligibility guidance", () => {
     let tool: any;
     registerRecordTool(

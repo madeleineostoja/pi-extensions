@@ -4,9 +4,10 @@ import {
   truncateHead,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { Type, type Static } from "typebox";
-import { inspectRun, listCheckoutRuns } from "./controls.js";
+import { inspectRunSnapshot, listCheckoutRuns } from "./controls.js";
 import { ExecGitClient } from "./git.js";
 import { checkoutPaths, runStatePath } from "./store.js";
 
@@ -25,6 +26,7 @@ type InspectionDetails = {
   checkoutRoot: string;
   runId?: string;
   truncated: boolean;
+  phase?: string;
 };
 
 export function registerImplementInspectionTool(pi: ExtensionAPI): void {
@@ -52,15 +54,22 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
         0,
       );
     },
-    renderResult(result, options, theme, context) {
-      if (context.isError) {
-        return new Text(theme.fg("error", firstText(result.content)), 0, 0);
-      }
-      if (!options.expanded || options.isPartial) {
-        return new Container();
-      }
-      return new Text(theme.fg("toolOutput", firstText(result.content)), 0, 0);
-    },
+    renderResult: toolResultRenderer({
+      summary(result) {
+        const details = result.details as InspectionDetails | undefined;
+        return details?.runId
+          ? `Implement run ${details.runId} · ${details.phase ?? "retained"}.`
+          : "Retained Implement runs.";
+      },
+      partial() {
+        return "Inspecting retained Implement state…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ?? "Inspection failed."
+        );
+      },
+    }),
   });
 }
 
@@ -71,19 +80,22 @@ export function inspectImplementRun(
   content: Array<{ type: "text"; text: string }>;
   details: InspectionDetails;
 } {
-  const text = input.runId
-    ? inspectRun(checkoutRoot, input.runId)
-    : formatRunList(checkoutRoot);
+  const inspection = input.runId
+    ? inspectRunSnapshot(checkoutRoot, input.runId)
+    : undefined;
+  const text = inspection?.text ?? formatRunList(checkoutRoot);
   const paths = checkoutPaths(checkoutRoot);
   const authoritativePath = input.runId
     ? runStatePath(paths, input.runId)
     : paths.runs;
   const output = boundOutput(text, authoritativePath);
+  const phase = inspection?.state.phase;
   return {
     content: [{ type: "text", text: output.text }],
     details: {
       checkoutRoot,
       ...(input.runId === undefined ? {} : { runId: input.runId }),
+      ...(phase ? { phase } : {}),
       truncated: output.truncated,
     },
   };

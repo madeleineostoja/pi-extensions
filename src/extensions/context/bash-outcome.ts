@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { executeSandboxBash } from "#sandbox/bash";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
 import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, retainResult } from "./retained-result.ts";
@@ -61,41 +62,25 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
         0,
       );
     },
-    renderResult(result, options, theme, context) {
-      if (context.isError) {
-        return new Text(theme.fg("error", firstText(result.content)), 0, 0);
-      }
-      if (options.isPartial) {
-        if (!options.expanded) {
-          return new Text(theme.fg("muted", "Running…"), 0, 0);
-        }
-        const output = firstText(result.content);
-        return new Text(
-          output.length > 0
-            ? theme.fg("toolOutput", output)
-            : theme.fg("muted", "Running…"),
-          0,
-          0,
+    renderResult: toolResultRenderer({
+      summary(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ??
+          "Bash command succeeded."
         );
-      }
-      const status =
-        firstText(result.content).split("\n", 1)[0] ??
-        "Bash command succeeded.";
-      if (!options.expanded) {
-        return new Text(theme.fg("toolOutput", status), 0, 0);
-      }
-      const retained = decodeRetainedResult(result.details);
-      const content =
-        retained === undefined ? undefined : retainedText(retained.content);
-      return new Text(
-        [
-          theme.fg("toolOutput", status),
-          ...(content === undefined ? [] : [theme.fg("toolOutput", content)]),
-        ].join("\n"),
-        0,
-        0,
-      );
-    },
+      },
+      partial() {
+        return "Running…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ?? "Bash command failed."
+        );
+      },
+      expandedContent(result) {
+        return decodeRetainedResult(result.details)?.content ?? result.content;
+      },
+    }),
   });
 }
 
@@ -104,25 +89,6 @@ function isNoOutputResult(result: Readonly<{ content: unknown }>): boolean {
     Array.isArray(result.content) &&
     result.content.length === 1 &&
     firstText(result.content) === "(no output)"
-  );
-}
-
-function retainedText(content: unknown): string | undefined {
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .filter(
-      (block): block is { type: "text"; text: string } =>
-        typeof block === "object" &&
-        block !== null &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string",
-    )
-    .map((block) => block.text)
-    .join("\n");
-  return (
-    text || (content.length > 0 ? "Retained non-text content." : undefined)
   );
 }
 

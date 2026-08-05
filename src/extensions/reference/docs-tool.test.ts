@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   DocsParameters,
   executeDocs,
+  registerDocs,
   normalizeName,
   normalizeVersion,
 } from "./docs-tool.js";
@@ -41,7 +43,39 @@ function transport(
 
 const input = { subject: "Acme---Widget", question: "How do I start?" };
 
+beforeAll(() => initTheme("dark", false));
+
 describe("docs resolution", () => {
+  it("renders selected documentation metadata without hiding expanded material", async () => {
+    const result = await executeDocs(input, undefined, {
+      transport: () => transport(),
+    });
+    let tool: any;
+    registerDocs(
+      { registerTool: (definition: unknown) => (tool = definition) } as never,
+      () => "",
+    );
+    const theme = { fg: (_color: string, text: string) => text };
+    const collapsed = tool
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        args: input,
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+    const expanded = tool
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        args: input,
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toContain("Documentation · Acme---Widget.");
+    expect(expanded).toContain("provider material");
+  });
   it("chooses the first exact normalized match and reports provider-current", async () => {
     const client = transport();
     const result = await executeDocs(input, undefined, {

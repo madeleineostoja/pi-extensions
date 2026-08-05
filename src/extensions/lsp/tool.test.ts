@@ -18,7 +18,7 @@ import {
   normalizeHoverResult,
 } from "./normalize.js";
 import { LspPool, LSP_POOL_MANAGER_KEY } from "./pool.js";
-import { LspParameters, executeLsp, lspStatus } from "./tool.js";
+import { LspParameters, executeLsp, lspStatus, registerLsp } from "./tool.js";
 
 const directories: string[] = [];
 function workspace(): string {
@@ -49,6 +49,130 @@ function useClient(client: Record<string, unknown>): void {
 }
 
 describe("lsp tool inputs and bounded render data", () => {
+  it("renders an operation, target, and result count before complete expanded output", () => {
+    let tool: any;
+    registerLsp({
+      registerTool: (definition: unknown) => (tool = definition),
+    } as never);
+    const result = {
+      content: [
+        {
+          type: "text" as const,
+          text: "definition output\n- src/value.ts:1:1",
+        },
+      ],
+      details: { action: "definition", success: true, locations: [{}, {}] },
+    };
+    const theme = { fg: (_color: string, text: string) => text };
+    const collapsed = tool
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        args: { file: "src/value.ts" },
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+    const expanded = tool
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        args: { file: "src/value.ts" },
+        isError: false,
+      })
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toContain("LSP definition · src/value.ts.");
+    expect(collapsed).toContain("2 results.");
+    expect(expanded).toContain("definition output");
+  });
+  it("distinguishes collapsed validation, unsupported, unavailable, stale, and thrown LSP outcomes", () => {
+    const tool = (() => {
+      let definition: any;
+      registerLsp({
+        registerTool: (value: unknown) => (definition = value),
+      } as never);
+      return definition;
+    })();
+    const theme = { fg: (_color: string, text: string) => text };
+    const render = (result: unknown, args: unknown, isError = false) =>
+      tool
+        .renderResult(result, { expanded: false, isPartial: false }, theme, {
+          args,
+          isError,
+        })
+        .render(500)
+        .map((line: string) => line.trimEnd())
+        .join("\n");
+
+    const validation = render(
+      {
+        content: [{ type: "text", text: "definition requires file" }],
+        details: { action: "definition", available: true, success: false },
+      },
+      { symbol: "value\n\u001b[31m", file: "src/value.ts\nextra" },
+    );
+    expect(validation).toContain(
+      "LSP definition · symbol “value” in src/value.ts extra.",
+    );
+    expect(validation).toContain(
+      "Request is invalid: definition requires file.",
+    );
+    expect(validation.split("\n")).toHaveLength(2);
+
+    expect(
+      render(
+        {
+          content: [{ type: "text", text: "capability failure" }],
+          details: {
+            action: "implementation",
+            available: true,
+            success: false,
+            unsupported: true,
+            server: "typescript",
+          },
+        },
+        { file: "src/value.ts" },
+      ),
+    ).toContain("The requested capability is unsupported by typescript.");
+    expect(
+      render(
+        {
+          content: [{ type: "text", text: "full server failure" }],
+          details: {
+            action: "references",
+            available: false,
+            success: false,
+            server: "typescript",
+            reason: "startup failed",
+          },
+        },
+        { symbol: "value", file: "src/value.ts" },
+      ),
+    ).toContain("typescript server is unavailable: startup failed.");
+    expect(
+      render(
+        {
+          content: [{ type: "text", text: "full stale diagnostics" }],
+          details: {
+            action: "diagnostics",
+            available: true,
+            success: false,
+            stale: true,
+            timedOut: true,
+          },
+        },
+        { file: "src/value.ts" },
+      ),
+    ).toContain("Diagnostics are stale after the timeout.");
+    expect(
+      render(
+        { content: [{ type: "text", text: "x".repeat(1_000) }] },
+        { query: "widget" },
+        true,
+      ),
+    ).toHaveLength(240);
+  });
+
   it("requires a deterministic 1-indexed position", async () => {
     const cwd = workspace();
     writeFileSync(join(cwd, "sample.ts"), "const value = 1;\n");

@@ -1,13 +1,15 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ArtifactStore } from "./artifacts.js";
 import { executeBatchWebFetch } from "./batch-web-fetch.js";
 import { DeadlineError, WebError } from "./errors.js";
 import type { Deadline } from "./cancellation.js";
 import { executeWebFetch, type WebFetchResult } from "./web-fetch.js";
 import type { WebTransport } from "./transport.js";
+import { renderBatchWebFetchResult } from "./result-renderer.js";
 
 function page(url: string, contentType: string, body: string): Response {
   const response = new Response(body, {
@@ -44,7 +46,43 @@ async function turns(count = 4): Promise<void> {
   }
 }
 
+beforeAll(() => initTheme("dark", false));
+
 describe("batch_web_fetch", () => {
+  it("summarizes mixed success while preserving ordered expanded sections", () => {
+    const result = {
+      content: [
+        {
+          type: "text" as const,
+          text: "## Item 1: https://one.example\nStatus: succeeded\n\nfirst body\n\n## Item 2: https://two.example\nStatus: failed · timed out",
+        },
+      ],
+      details: { total: 2, succeeded: 1, failed: 1 },
+    };
+    const theme = { fg: (_color: string, text: string) => text } as never;
+    const collapsed = renderBatchWebFetchResult(
+      result,
+      { expanded: false, isPartial: false },
+      theme,
+      {},
+    )
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+    const expanded = renderBatchWebFetchResult(
+      result,
+      { expanded: true, isPartial: false },
+      theme,
+      {},
+    )
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toContain("1 of 2 targets fetched · 1 failed.");
+    expect(expanded.indexOf("Item 1")).toBeLessThan(expanded.indexOf("Item 2"));
+    expect(expanded).toContain("Status: failed · timed out");
+  });
   it("runs at most four items, caps item deadlines, and assembles out-of-order work in request order", async () => {
     const gates = new Map<string, ReturnType<typeof deferred>>();
     const starts: string[] = [];

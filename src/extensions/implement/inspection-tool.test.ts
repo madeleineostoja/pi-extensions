@@ -125,6 +125,7 @@ describe("inspect_implement_run", () => {
     const text = result.content[0].text;
 
     expect(text).toContain("Run: run-1");
+    expect(text).toContain("Phase: running");
     expect(text).toContain(
       `State: ${join(paths.runs, "run-1", "run-state.json")}`,
     );
@@ -147,6 +148,7 @@ describe("inspect_implement_run", () => {
     expect(result.details).toEqual({
       checkoutRoot: run.root,
       runId: "run-1",
+      phase: "running",
       truncated: false,
     });
   });
@@ -223,8 +225,9 @@ describe("inspect_implement_run", () => {
         .renderResult(result, { expanded: false, isPartial: false }, theme, {
           isError: false,
         })
-        .render(200),
-    ).toEqual([]);
+        .render(200)
+        .join("\n"),
+    ).toContain("Implement run run-1");
     expect(
       tool
         .renderResult(result, { expanded: true, isPartial: false }, theme, {
@@ -233,7 +236,7 @@ describe("inspect_implement_run", () => {
         .render(20_000)
         .map((line: string) => line.trimEnd())
         .join("\n"),
-    ).toBe(result.content[0].text);
+    ).toContain(result.content[0].text);
   });
 
   it("keeps inspection errors visible while collapsed", () => {

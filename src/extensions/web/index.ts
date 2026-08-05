@@ -6,6 +6,10 @@ import {
   type WebFetchInput,
 } from "./schema.js";
 import { WebFetchOwner } from "./owner.js";
+import {
+  renderBatchWebFetchResult,
+  renderWebFetchResult,
+} from "./result-renderer.js";
 
 export default function (pi: ExtensionAPI): void {
   const owner = new WebFetchOwner();
@@ -18,6 +22,7 @@ export default function (pi: ExtensionAPI): void {
     async execute(_toolCallId, input: WebFetchInput, signal, onUpdate) {
       return owner.execute(input, signal, onUpdate);
     },
+    renderResult: renderWebFetchResult,
   });
   pi.registerTool({
     name: "batch_web_fetch",
@@ -28,6 +33,7 @@ export default function (pi: ExtensionAPI): void {
     async execute(_toolCallId, input: BatchWebFetchInput, signal, onUpdate) {
       return owner.executeBatch(input, signal, onUpdate);
     },
+    renderResult: renderBatchWebFetchResult,
   });
   pi.on("session_shutdown", () => owner.shutdown());
 }

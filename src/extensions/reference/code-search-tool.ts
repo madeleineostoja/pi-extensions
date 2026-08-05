@@ -1,5 +1,6 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { loadGithubAuth } from "./auth.js";
 import { LIMITS, byteLength, hasControl } from "./bounds.js";
 import {
@@ -81,6 +82,33 @@ export function registerCodeSearch(
     async execute(_toolCallId, input: CodeSearchInput, signal) {
       return executeCodeSearch(input, signal, { agentDir: agentDir() });
     },
+    renderResult: toolResultRenderer({
+      summary(result) {
+        const details = result.details as {
+          query?: string;
+          accepted?: number;
+          discarded?: number;
+          truncated?: boolean;
+        };
+        return [
+          `GitHub code search · ${details?.query ?? "query"}.`,
+          ...(typeof details?.accepted === "number"
+            ? [
+                `${details.accepted} match${details.accepted === 1 ? "" : "es"}${details.truncated ? " · more may be available" : ""}.`,
+              ]
+            : []),
+        ];
+      },
+      partial() {
+        return "Searching GitHub code…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] || "Code search failed."
+        );
+      },
+      content: "markdown",
+    }),
   });
 }
 
@@ -270,7 +298,7 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
         : "Qualifiers: none",
       `Accepted: ${results.length}; discarded before normalization: ${discarded}${boundedTruncation ? "; results or fields truncated" : ""}.`,
       "Matches are observed usage visible to the configured GitHub credential, not proof of correctness, authority, freshness, package identity, or repository health.",
-      ...results.map((result) => JSON.stringify(result)),
+      ...results.map(renderMatch),
     ].join("\n");
     return { content: [{ type: "text" as const, text }], details };
   };
@@ -282,6 +310,39 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
     boundedTruncation = true;
   }
   return result();
+}
+
+function renderMatch(result: CodeMatch): string {
+  const fragments = result.fragments?.map(renderFragment) ?? [];
+  return [
+    `## ${result.rank}. ${result.repository} — \`${result.path}\``,
+    `Revision: \`${result.revision}\` · ${result.url}`,
+    ...fragments,
+  ].join("\n");
+}
+
+function renderFragment(fragment: { text: string }): string {
+  const longestFence = Math.max(
+    0,
+    ...Array.from(fragment.text.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(Math.max(3, longestFence + 1));
+  return `${fence}text\n${fragment.text}\n${fence}`;
+}
+
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return (
+    content.find(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )?.text ?? ""
+  );
 }
 
 function normalizeMatch(

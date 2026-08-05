@@ -32,7 +32,7 @@ Use LSP for focused semantic relationships, text search for literal discovery, a
 
 Servers start lazily, are shared per workspace, and retire after idle time. Requests default to five seconds and cap at 15. Results are bounded to 100 locations, symbols, or diagnostics and 2,000 hover characters; rendered lists also use Pi's ordinary tool-result limits.
 
-Unavailable servers and unsupported capabilities return non-fatal fallback results. The model cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. Language servers are trusted processes outside Sandbox and inherit Pi's environment.
+Unavailable servers and unsupported capabilities return non-fatal fallback results. Collapsed rows identify the operation, target, and available result count; expanding a row preserves the complete bounded semantic output. The model cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. Language servers are trusted processes outside Sandbox and inherit Pi's environment.
 
 ## Managed processes
 
@@ -62,7 +62,7 @@ Qualifying friction may include a flaky documented test handled with a narrower 
 
 Do not record the task or review subject itself, unmet criteria, unresolved correctness or safety problems, inferred architecture, unused suggestions, expected guided steps, adequately documented procedures, one-off agent mistakes, or transient provider failures.
 
-Records merge by stable key and retain occurrence count. `/papercuts` shows open and closed findings; closing is reversible when a later recurrence reopens the key. Findings are candidates for repository guidance or small fixes, never automatic work.
+Records merge by stable key and retain occurrence count. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation. `/papercuts` shows open and closed findings; closing is reversible when a later recurrence reopens the key. Findings are candidates for repository guidance or small fixes, never automatic work.
 
 A repository and linked worktrees share one leased registry in the canonical primary worktree:
 

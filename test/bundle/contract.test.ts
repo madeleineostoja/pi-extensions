@@ -495,10 +495,28 @@ describe("Pipkin bundle", () => {
     );
     expect(webFetch?.renderShell).toBeUndefined();
     expect(webFetch?.renderCall).toBeUndefined();
-    expect(webFetch?.renderResult).toBeUndefined();
+    expect(webFetch?.renderResult).toBeTypeOf("function");
     expect(batchWebFetch?.renderShell).toBeUndefined();
     expect(batchWebFetch?.renderCall).toBeUndefined();
-    expect(batchWebFetch?.renderResult).toBeUndefined();
+    expect(batchWebFetch?.renderResult).toBeTypeOf("function");
+    for (const toolName of [
+      "lsp",
+      "inspect_implement_run",
+      "docs",
+      "package_search",
+      "code_search",
+      "web_fetch",
+      "batch_web_fetch",
+      "record_papercut",
+    ]) {
+      expect(
+        fixture.result.extensions.some(
+          (extension) =>
+            typeof extension.tools.get(toolName)?.definition.renderResult ===
+            "function",
+        ),
+      ).toBe(true);
+    }
     for (const extension of fixture.result.extensions) {
       for (const { definition } of extension.tools.values()) {
         expect(definition.promptSnippet).toBeUndefined();

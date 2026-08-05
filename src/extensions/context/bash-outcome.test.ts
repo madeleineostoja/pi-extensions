@@ -229,7 +229,7 @@ describe("bash_outcome", () => {
       .join("\n");
     expect(collapsedPartial.trimEnd()).toBe("Running…");
     expect(collapsedPartial).not.toContain("first");
-    expect(colors).toEqual(["muted"]);
+    expect(colors).toEqual(["warning"]);
 
     colors.length = 0;
     const expandedPartial = definition
@@ -240,8 +240,8 @@ describe("bash_outcome", () => {
       .join("\n");
     expect(
       expandedPartial.split("\n").map((line: string) => line.trimEnd()),
-    ).toEqual(["first", "second"]);
-    expect(colors).toEqual(["toolOutput"]);
+    ).toEqual(["Running…", "first", "second"]);
+    expect(colors).toEqual(["warning", "toolOutput"]);
 
     colors.length = 0;
     const success = definition
@@ -254,7 +254,7 @@ describe("bash_outcome", () => {
       .render(120)
       .join("\n");
     expect(success.trimEnd()).toBe("Build succeeded.");
-    expect(colors).toEqual(["toolOutput"]);
+    expect(colors).toEqual(["success"]);
 
     colors.length = 0;
     const failure = definition
@@ -268,6 +268,31 @@ describe("bash_outcome", () => {
       .join("\n");
     expect(failure.trimEnd()).toBe("Command failed");
     expect(colors).toEqual(["error"]);
+  });
+
+  it("bounds a long failure summary while preserving its complete expanded text", () => {
+    const { definition } = outcome();
+    const theme = { fg: (_color: string, text: string) => text };
+    const failure = `command failed: ${"x".repeat(2_000)}`;
+    const result = { content: [{ type: "text", text: failure }] };
+
+    const collapsed = definition
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        isError: true,
+      })
+      .render(500)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+    const expanded = definition
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        isError: true,
+      })
+      .render(5_000)
+      .join("\n");
+
+    expect(collapsed).toHaveLength(240);
+    expect(collapsed).toMatch(/…$/);
+    expect(expanded).toContain(failure);
   });
 
   it("rejects inactive Bash and propagates Sandbox failures unchanged", async () => {

@@ -1,4 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  compactDisplayText,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { Type } from "typebox";
 import type { PapercutObservation } from "./store.js";
 import { createPapercutStatusController } from "./status.js";
@@ -86,6 +90,21 @@ function resultText(
   return `Papercut ${kind}: ${key} (${occurrences})`;
 }
 
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return (
+    content.find(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )?.text ?? ""
+  );
+}
+
 function rejection(): {
   content: Array<{ type: "text"; text: string }>;
   details: { kind: "rejected" };
@@ -105,6 +124,32 @@ export function registerRecordTool(
     label: "record_papercut",
     description: TOOL_DESCRIPTION,
     parameters: PapercutObservationSchema,
+    renderResult: toolResultRenderer({
+      summary(result) {
+        const details = result.details as
+          | { outcome?: string; key?: string; title?: string; kind?: string }
+          | undefined;
+        if (details?.kind === "rejected") {
+          return "Papercut was not recorded.";
+        }
+        const key = compactDisplayText(details?.key, 64) || "papercut";
+        const title = compactDisplayText(details?.title, 120);
+        const outcome = compactDisplayText(details?.outcome, 80);
+        return [
+          `Recorded ${key}${title ? ` · ${title}` : ""}.`,
+          ...(outcome ? [`Outcome: ${outcome}.`] : []),
+        ];
+      },
+      partial() {
+        return "Recording papercut…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ||
+          "Papercut recording failed."
+        );
+      },
+    }),
     async execute(
       _id,
       observation: PapercutObservation,
@@ -121,6 +166,7 @@ export function registerRecordTool(
         const details = {
           outcome: result.kind,
           key: result.record.key,
+          title: result.record.title,
           occurrences: result.record.occurrences,
         };
         return {

@@ -80,14 +80,53 @@ describe("code_search", () => {
         },
       ],
     });
+    expect(result.content[0]?.text).toContain("## 1. acme/private-widget");
+    expect(result.content[0]?.text).toContain("## 2. acme/widget");
     expect(result.content[0]?.text).toContain(
-      '"repository":"acme/private-widget"',
+      `Revision: \`${"a".repeat(40)}\``,
     );
-    expect(result.content[0]?.text).toContain('"repository":"acme/widget"');
-    expect(result.content[0]?.text).toContain(
-      '"revision":"' + "a".repeat(40) + '"',
+    expect(result.content[0]?.text).toContain("```text\nuseWidget()\n```");
+  });
+
+  it("contains every multiline fragment line as literal source evidence", async () => {
+    const github = {
+      searchCode: vi.fn(async () => ({
+        data: {
+          items: [
+            {
+              ...publicItem,
+              text_matches: [
+                {
+                  fragment:
+                    "const value = 1;\n## not a result heading\n- not a provider list\n<div>literal</div>\n```",
+                  matches: [{ indices: [0, 5] }],
+                },
+              ],
+            },
+          ],
+        },
+      })),
+    } as unknown as GithubSearchClient;
+    const result = await executeCodeSearch({ query: "value" }, undefined, {
+      github: () => github,
+    });
+    const text = result.content[0]?.text ?? "";
+
+    expect(text).toContain(
+      "````text\nconst value = 1;\n## not a result heading\n- not a provider list\n<div>literal</div>\n```\n````",
     );
-    expect(result.content[0]?.text).toContain('"text":"useWidget()"');
+    expect(result.details).toMatchObject({
+      results: [
+        {
+          fragments: [
+            {
+              text: "const value = 1;\n## not a result heading\n- not a provider list\n<div>literal</div>\n```",
+              offsets: [[0, 5]],
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("succeeds with an empty list when every result is malformed", async () => {

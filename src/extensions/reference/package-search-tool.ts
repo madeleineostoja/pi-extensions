@@ -1,5 +1,6 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { toolResultRenderer } from "#lib/ui/tool-result-renderer";
 import { loadContext7Auth, loadGithubAuth } from "./auth.js";
 import {
   LIMITS,
@@ -87,6 +88,33 @@ export function registerPackageSearch(
     async execute(_toolCallId, input: PackageSearchInput, signal) {
       return executePackageSearch(input, signal, { agentDir: agentDir() });
     },
+    renderResult: toolResultRenderer({
+      summary(result) {
+        const details = result.details as {
+          query?: string;
+          groups?: Group<unknown>[];
+        };
+        const groups = details?.groups ?? [];
+        const succeeded = groups.filter(
+          (group) => group.status === "ok",
+        ).length;
+        const failed = groups.length - succeeded;
+        return [
+          `Package discovery · ${details?.query ?? "query"}.`,
+          `${succeeded} provider${succeeded === 1 ? "" : "s"} responded${failed ? ` · ${failed} unavailable` : ""}.`,
+        ];
+      },
+      partial() {
+        return "Searching package providers…";
+      },
+      error(result) {
+        return (
+          firstText(result.content).split("\n", 1)[0] ||
+          "Package discovery failed."
+        );
+      },
+      content: "markdown",
+    }),
   });
 }
 
@@ -377,7 +405,9 @@ function buildResult(
       `Package discovery for: ${input.query}`,
       "Documentation availability, npm publication data, and public GitHub repositories are separately ranked provider signals; they are not matched, compared, or recommendations.",
       npmGuidance(groups[1]),
-      ...groups.map(renderGroup),
+      renderDocumentationGroup(groups[0]),
+      renderNpmGroup(groups[1]),
+      renderGithubGroup(groups[2]),
     ].join("\n");
     return { content: [{ type: "text" as const, text }], details };
   };
@@ -398,21 +428,108 @@ function npmGuidance(group: Group<NpmPackage>): string {
     : "npm discovery failed. Retry with a simpler or exact package-name query, or verify a candidate from another provider with `npm view`.";
 }
 
-function renderGroup(group: Group<unknown>): string {
-  const state =
-    group.status === "ok"
-      ? "ok"
-      : `error${group.errorKind ? ` [${group.errorKind}]` : ""}: ${group.error}`;
+function renderDocumentationGroup(group: Group<ContextResult>): string {
+  return renderGroup(group, group.results.map(renderDocumentationResult));
+}
+
+function renderNpmGroup(group: Group<NpmPackage>): string {
+  return renderGroup(group, group.results.map(renderNpmResult));
+}
+
+function renderGithubGroup(group: Group<GithubRepository>): string {
+  return renderGroup(group, group.results.map(renderGithubResult));
+}
+
+function renderGroup(group: Group<unknown>, results: string[]): string {
   const notices = [
     group.discarded ? `${group.discarded} discarded` : undefined,
-    group.truncated
-      ? "truncated; omitted provider fields or results"
-      : undefined,
-  ].filter(Boolean);
+    group.truncated ? "provider fields or results omitted" : undefined,
+  ].filter((notice): notice is string => notice !== undefined);
+  if (group.status === "error") {
+    return `## ${group.provider}\nProvider failed${group.errorKind ? ` (${group.errorKind})` : ""}: ${group.error ?? "No reason was supplied."}`;
+  }
   return [
-    `${group.provider} (${state})${notices.length ? `; ${notices.join("; ")}` : ""}`,
-    ...group.results.map((result) => JSON.stringify(result)),
+    `## ${group.provider} · ${group.results.length} result${group.results.length === 1 ? "" : "s"}${notices.length ? ` · ${notices.join("; ")}` : ""}`,
+    ...results,
   ].join("\n");
+}
+
+function renderDocumentationResult(result: ContextResult): string {
+  const quality = result.quality
+    ? [
+        result.quality.trustScore === undefined
+          ? undefined
+          : `trust score ${result.quality.trustScore}`,
+        result.quality.totalSnippets === undefined
+          ? undefined
+          : `${result.quality.totalSnippets} snippets`,
+      ].filter((part): part is string => part !== undefined)
+    : [];
+  return [
+    `${result.rank}. **${result.title}**${result.description ? ` — ${result.description}` : ""}`,
+    `   ID: \`${result.id}\``,
+    ...(result.versions.length
+      ? [`   Versions: ${result.versions.join(", ")}`]
+      : []),
+    ...(quality.length ? [`   Quality: ${quality.join(" · ")}`] : []),
+  ].join("\n");
+}
+
+function renderNpmResult(result: NpmPackage): string {
+  const metadata = [
+    result.date ? `published ${result.date}` : undefined,
+    result.license ? `license ${result.license}` : undefined,
+    result.publisher ? `publisher ${result.publisher}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const links = [
+    `[npm](${result.links.npm})`,
+    result.links.homepage ? `[homepage](${result.links.homepage})` : undefined,
+    result.links.repository
+      ? `[repository](${result.links.repository})`
+      : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return [
+    `${result.rank}. **${result.name}** · version ${result.version}${result.description ? ` — ${result.description}` : ""}`,
+    ...(metadata.length ? [`   ${metadata.join(" · ")}`] : []),
+    ...(result.keywords?.length
+      ? [`   Keywords: ${result.keywords.join(", ")}`]
+      : []),
+    `   Links: ${links.join(" · ")}`,
+  ].join("\n");
+}
+
+function renderGithubResult(result: GithubRepository): string {
+  const metadata = [
+    result.language ? `language ${result.language}` : undefined,
+    `stars ${result.stars}`,
+    `forks ${result.forks}`,
+    result.license ? `license ${result.license}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const activity = [
+    result.updatedAt ? `updated ${result.updatedAt}` : undefined,
+    result.pushedAt ? `pushed ${result.pushedAt}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return [
+    `${result.rank}. **${result.repository}**${result.description ? ` — ${result.description}` : ""}`,
+    `   [Repository](${result.url}) · ${metadata.join(" · ")}`,
+    ...(activity.length ? [`   ${activity.join(" · ")}`] : []),
+    `   Archived: ${result.archived ? "yes" : "no"} · Fork: ${result.fork ? "yes" : "no"}`,
+  ].join("\n");
+}
+
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return (
+    content.find(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )?.text ?? ""
+  );
 }
 
 function aborted(signal: AbortSignal): Error {

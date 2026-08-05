@@ -216,6 +216,7 @@ function result(options: {
     status: options.response.status,
     contentType,
     output: options.output,
+    contentChars: Array.from(options.body).length,
     profile: options.profile.browser,
     os: options.profile.os,
     ...(title ? { title } : {}),
