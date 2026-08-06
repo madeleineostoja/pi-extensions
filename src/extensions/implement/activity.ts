@@ -139,6 +139,12 @@ function publishActivity(
         .find((value): value is string => Boolean(value)) ??
       "Source workstream";
     const id = activityId("source", workstream.id);
+    const timing = durableWorkstreamStart(state, {
+      kind: "source",
+      id: workstream.id,
+    });
+    const taskCount = workstream.taskIds.length;
+    const taskMetric = `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
     if (
       publisher.upsert({
         id,
@@ -147,7 +153,8 @@ function publishActivity(
         title: shorten(title, 240),
         detail: shorten(workstreamPhase(workstream.phase), 120),
         state: workstreamState(workstream.phase),
-        ...durableWorkstreamStart(state, { kind: "source", id: workstream.id }),
+        ...timing,
+        metric: timing.metric ? `${taskMetric} · ${timing.metric}` : taskMetric,
         updatedAt: Date.now(),
       })
     ) {

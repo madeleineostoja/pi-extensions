@@ -54,6 +54,41 @@ describe("Implement Activity projector", () => {
     expect(children.every((record) => record.id.length <= 64)).toBe(true);
   });
 
+  it("keeps overall progress separate from workstream task totals", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    const running = state({
+      lane: {
+        id: "lane",
+        phase: "implementing",
+        taskIds: ["first", "second", "third"],
+      },
+    });
+    running.tasks = {
+      first: {
+        workstreamId: "lane",
+        phase: "published",
+        checkpoint: "first-sha",
+      },
+      second: { workstreamId: "lane", phase: "pending" },
+      third: { workstreamId: "lane", phase: "pending" },
+    };
+
+    activity.update(running);
+
+    const records = publisher.upsert.mock.calls.map(([published]) => published);
+    expect(
+      records.find((record) => record.label === "Implement"),
+    ).toMatchObject({ progress: { completed: 1, total: 3 } });
+    expect(
+      records.find((record) => record.label === "Workstream"),
+    ).toMatchObject({ metric: "3 tasks" });
+  });
+
   it("collapses dependency-skipped lanes while retaining failures", () => {
     const events = createEventBus();
     const store = new ActivityStore();
