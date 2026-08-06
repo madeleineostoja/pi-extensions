@@ -40,6 +40,22 @@ export function toolResult(
   } satisfies AgentToolResultWithStatus;
 }
 
+export function cancelledWaitResult(
+  snapshot: RuntimeSnapshot,
+): AgentToolResultWithStatus & { terminate: true } {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Waiting for subagent ${snapshot.id} was cancelled. The subagent is still ${snapshot.status}; join it later if needed.`,
+      },
+    ],
+    details: presentationDetails(snapshot, "status"),
+    isError: false,
+    terminate: true,
+  };
+}
+
 export const renderAgentCall = toolCallRenderer<PublicAgentParams>({
   name: "Agent",
   detail: (args) =>

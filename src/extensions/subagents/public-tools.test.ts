@@ -165,7 +165,18 @@ describe("public subagent tools", () => {
     );
 
     controller.abort();
-    await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    await expect(waiting).resolves.toMatchObject({
+      content: [
+        {
+          text: expect.stringContaining(
+            `Waiting for subagent ${id} was cancelled`,
+          ),
+        },
+      ],
+      details: { id, status: "running", presentation: "status" },
+      isError: false,
+      terminate: true,
+    });
     expect(runtime.snapshot(id)?.status).toBe("running");
 
     promptDone.resolve();
@@ -177,6 +188,38 @@ describe("public subagent tools", () => {
       context(),
     );
     expect(later.content[0].text).toBe("complete after cancelled wait");
+  });
+
+  it("does not classify a non-waiting inspection as cancelled", async () => {
+    const promptDone = deferred<void>();
+    const child = session();
+    child.prompt = vi.fn(() => promptDone.promise);
+    const { tools, runtime } = setup(vi.fn(async () => ({ session: child })));
+    const started = await tool(tools, "Agent").execute(
+      "start",
+      { subagent_type: "Explore", prompt: "inspect it" },
+      undefined,
+      undefined,
+      context(),
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    const inspected = await tool(tools, "get_subagent_result").execute(
+      "inspect",
+      { id: started.details.id, wait: false },
+      controller.signal,
+      undefined,
+      context(),
+    );
+
+    expect(inspected).toMatchObject({
+      details: { id: started.details.id, status: "running" },
+      isError: false,
+    });
+    expect(inspected).not.toHaveProperty("terminate");
+    runtime.stop(started.details.id);
+    promptDone.resolve();
   });
 
   it("keeps status and error rows distinct and actionable", () => {

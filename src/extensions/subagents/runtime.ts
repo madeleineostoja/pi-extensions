@@ -159,8 +159,11 @@ export type QueueSubagentInput = {
 
 export type ManagedAgentMode = "foreground" | "background";
 
+export type PublicSubagentWaitOutcome = "snapshot" | "terminal" | "cancelled";
+
 export type PublicSubagentResult = {
   snapshot: RuntimeSnapshot;
+  waitOutcome: PublicSubagentWaitOutcome;
   progress?: string;
 };
 
@@ -377,11 +380,12 @@ function agentIdSlug(input: QueueSubagentInput): string {
   return role ?? "agent";
 }
 
-function abortError(): DOMException {
-  return new DOMException(
-    "Waiting for subagent result cancelled.",
-    "AbortError",
-  );
+class PublicWaitCancelledError extends Error {
+  override readonly name = "AbortError";
+}
+
+function abortError(): PublicWaitCancelledError {
+  return new PublicWaitCancelledError("Waiting for subagent result cancelled.");
 }
 
 function waitWithSignal<T>(
@@ -395,7 +399,10 @@ function waitWithSignal<T>(
     return Promise.reject(abortError());
   }
   return new Promise((resolve, reject) => {
-    const onAbort = () => reject(abortError());
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => {
@@ -1214,19 +1221,33 @@ export class SubagentRuntime {
     signal?: AbortSignal,
   ): Promise<PublicSubagentResult> {
     const record = this.#requirePublicRecord(id);
+    let waitOutcome: PublicSubagentWaitOutcome = "snapshot";
     if (wait) {
-      await this.#waitForRecord(record, signal);
+      try {
+        await this.#waitForRecord(record, signal);
+        waitOutcome = "terminal";
+      } catch (error) {
+        if (!(error instanceof PublicWaitCancelledError)) {
+          throw error;
+        }
+        waitOutcome = "cancelled";
+      }
     }
     if (!this.#isCurrentRecord(record)) {
       throw new Error(`Unknown subagent ${id}`);
     }
     refreshHealth(record);
     const snapshot = projectSnapshot(record);
-    if (!includeProgress || snapshot.status === "completed") {
-      return { snapshot };
+    if (
+      waitOutcome === "cancelled" ||
+      !includeProgress ||
+      snapshot.status === "completed"
+    ) {
+      return { snapshot, waitOutcome };
     }
     return {
       snapshot,
+      waitOutcome,
       progress: renderPublicProgress(this.#inspection(record)),
     };
   }
@@ -1272,6 +1293,7 @@ export class SubagentRuntime {
       };
       waiter.onAbort = () => {
         remove();
+        signal?.removeEventListener("abort", waiter.onAbort!);
         reject(abortError());
       };
       if (signal?.aborted) {

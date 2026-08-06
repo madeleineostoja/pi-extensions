@@ -6,6 +6,7 @@ import { Type, type Static } from "typebox";
 import { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
 import type { SubagentRuntime } from "./runtime.js";
 import {
+  cancelledWaitResult,
   renderAgentCall,
   renderAgentResult,
   toolResult,
@@ -152,7 +153,9 @@ export function registerPublicAgentTools({
         params.include_progress ?? false,
         signal,
       );
-      return toolResult(response.snapshot, "status", response.progress);
+      return response.waitOutcome === "cancelled"
+        ? cancelledWaitResult(response.snapshot)
+        : toolResult(response.snapshot, "status", response.progress);
     },
     renderResult: renderAgentResult,
   });
