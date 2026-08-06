@@ -255,7 +255,7 @@ describe("git helpers", () => {
     try {
       await waitForCondition(
         "owned Git child startup",
-        () => existsSync(pidPath),
+        () => existsSync(marker),
         {
           diagnostics: observation.describe,
           observations: [observation],
@@ -276,10 +276,15 @@ describe("git helpers", () => {
       });
       await waitForCondition(
         "owned Git child exit acknowledgement",
-        () => existsSync(exitPath),
+        () => {
+          try {
+            return readFileSync(exitPath, "utf-8") === String(startedChildPid);
+          } catch {
+            return false;
+          }
+        },
         { diagnostics: observation.describe },
       );
-      expect(readFileSync(exitPath, "utf-8")).toBe(String(startedChildPid));
     } finally {
       writeFileSync(release, "go");
       controller.abort();
