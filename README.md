@@ -53,7 +53,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Safety and context
 
-- **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can snapshot repository-read-only protection; Linux remains instruction-only.
+- **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can protect source and Git while retaining disposable dependency runtime writes; Linux remains instruction-only.
 - **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
 - **Context** prunes stale or superseded tool output while preserving original results for `context_recall`.
 - **Processes** runs foreground non-interactive commands while the main agent continues independent work.

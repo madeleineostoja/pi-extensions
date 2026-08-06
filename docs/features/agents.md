@@ -73,7 +73,7 @@ Explore and Review may record qualifying incidental friction through `record_pap
 
 Public subagents share the invoking session's filesystem and do not receive isolated Git worktrees. Repository preservation is a role contract.
 
-On enabled macOS Sandbox sessions, Explore, Review, and nested Explore snapshot repository-read-only mode when spawned. Their workspace/worktree, worktree Git directory, and common Git directory are protected while intended temporary and cache writes remain available. `/sandbox off` affects later children only. Linux remains instruction-only.
+On enabled macOS Sandbox sessions, Explore, Review, and nested Explore snapshot repository-read-only mode when spawned. Their source and Git state are protected while intended temporary/cache and package dependency runtime writes remain available to Bash so ordinary checks can run. Direct `write` and `edit` remain repository-denied. `/sandbox off` affects later children only. Linux remains instruction-only.
 
 Do not edit files currently owned by a public child. For workspace isolation and controlled publication, use [Implement](implementation.md).
 

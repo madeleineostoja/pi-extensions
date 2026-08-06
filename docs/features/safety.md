@@ -9,12 +9,12 @@ Neither is hostile-code isolation. Pipkin extensions still run with the Pi proce
 
 ## Platform behavior
 
-| Platform or state                        | Model Bash and direct writes                                                                                                |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Enabled macOS main session               | Seatbelt-confined Bash and canonical-workspace checks for direct `write`/`edit`                                             |
-| Enabled macOS repository-read-only child | Repository workspace/worktree, worktree Git, and common Git writes denied; intended temporary/cache writes remain available |
-| Linux                                    | `sandbox unavailable`; ordinary local Bash and instruction-only repository preservation                                     |
-| macOS initialization failure             | Sandbox reports unavailable and blocks model Bash/direct mutation until the operator explicitly chooses `/sandbox off`      |
+| Platform or state                        | Model Bash and direct writes                                                                                           |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Enabled macOS main session               | Seatbelt-confined Bash and canonical-workspace checks for direct `write`/`edit`                                        |
+| Enabled macOS repository-read-only child | Repository source and Git writes denied; temporary/cache and package dependency runtime writes remain available        |
+| Linux                                    | `sandbox unavailable`; ordinary local Bash and instruction-only repository preservation                                |
+| macOS initialization failure             | Sandbox reports unavailable and blocks model Bash/direct mutation until the operator explicitly chooses `/sandbox off` |
 
 Sandbox starts enabled for macOS main sessions. Child sessions resolve policy from their runtime cwd and snapshot their parent's current enabled state and requested write mode when spawned. Later toggles do not change existing children or already-running descendants.
 
@@ -26,11 +26,11 @@ Sandbox starts enabled for macOS main sessions. Child sessions resolve policy fr
 | `/sandbox on`  | Enable protection for later model Bash/direct-tool calls in the current session                    |
 | `/sandbox off` | Disable protection for later calls and children spawned afterward                                  |
 
-The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial. `/sandbox` lists recent denials newest first; its policy page reports effective authority, so repository-read-only children list only their writable temporary/cache roots.
+The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial. `/sandbox` lists recent denials newest first; its policy page reports effective authority, including temporary/cache and package dependency roots available to repository-read-only Bash.
 
 On macOS, model Bash runs through `/usr/bin/sandbox-exec`. Workspace-write mode admits the canonical repository workspace, required Git administration, canonical temporary roots, and reviewed npm, pnpm, and GitHub CLI cache/state roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
 
-Repository-read-only mode adds final denies for the workspace/worktree and Git authorities after writable-root allows. It is defense in depth for trusted inspection agents, not a general filesystem sandbox.
+Repository-read-only mode adds final denies for the workspace/worktree and Git authorities after writable-root allows, except for discovered package `node_modules` trees treated as disposable Bash runtime state. This lets ordinary checks update dependency-owned caches while source and Git remain protected. Direct `write` and `edit` remain denied throughout the repository, including under `node_modules`. It is defense in depth for trusted inspection agents, not a general filesystem sandbox.
 
 `bash_outcome` uses the same Sandbox-owned Bash path as ordinary model Bash. Processes uses that path for current-host managed foreground commands. User `!` and `!!` shell execution remains ordinary user-controlled Bash on every platform.
 

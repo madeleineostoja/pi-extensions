@@ -173,12 +173,16 @@ describe("Sandbox command", () => {
           worktreeGitDir: "/workspace/.git",
           commonGitDir: "/git-common",
         },
-        dependencyRoots: ["/workspace/node_modules"],
+        dependencyRoots: [
+          "/workspace/node_modules",
+          "/package-workspace/node_modules",
+        ],
         writableRoots: [
           "/workspace",
           "/workspace/.git",
           "/git-common",
           "/workspace/node_modules",
+          "/package-workspace/node_modules",
           "/temporary",
           "/cache",
         ],
@@ -194,8 +198,9 @@ describe("Sandbox command", () => {
     expect(policyDetail).toContain(
       "Direct write/edit scope: repository mutation denied",
     );
-    expect(policyDetail).toContain("Bash writable roots: /temporary, /cache");
-    expect(policyDetail).not.toContain("/workspace/node_modules");
+    expect(policyDetail).toContain(
+      "Bash writable roots: /temporary, /cache, /workspace/node_modules, /package-workspace/node_modules",
+    );
     fixture.panel.dispose();
   });
 

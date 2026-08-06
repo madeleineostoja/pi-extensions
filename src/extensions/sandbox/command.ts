@@ -25,9 +25,11 @@ function effectiveBashWriteScopes(
   policy: NonNullable<ReturnType<SandboxSessionState["policy"]>>,
 ): readonly string[] {
   return repositoryReadOnly
-    ? [...policy.temporaryRoots, ...policy.cacheRoots].filter(
-        (root, index, roots) => roots.indexOf(root) === index,
-      )
+    ? [
+        ...policy.temporaryRoots,
+        ...policy.cacheRoots,
+        ...policy.dependencyRoots,
+      ].filter((root, index, roots) => roots.indexOf(root) === index)
     : policy.writableRoots;
 }
 

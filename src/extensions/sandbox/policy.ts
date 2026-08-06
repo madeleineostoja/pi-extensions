@@ -23,7 +23,7 @@ export type SandboxPolicy = Readonly<{
   git?: SandboxGit;
   temporaryRoots: readonly string[];
   cacheRoots: readonly string[];
-  /** Dependency-installation authorities used only by workspace-write sessions. */
+  /** Package dependency trees treated as disposable Bash runtime state. */
   dependencyRoots: readonly string[];
   writableRoots: readonly string[];
   creationRoots: readonly string[];
@@ -239,13 +239,78 @@ function ancestorPackageWorkspace(workspaceRoot: string): string | undefined {
   }
 }
 
+function packageDependencyRoot(packageRoot: string): string | undefined {
+  const expected = join(packageRoot, "node_modules");
+  try {
+    const canonical = canonicalExisting(expected);
+    return canonical === expected ? canonical : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function containsTrackedFiles(
+  packageWorkspace: string,
+  dependencyRoot: string,
+  gitRunner: GitRunner,
+): Promise<boolean> {
+  const relativeRoot = relative(packageWorkspace, dependencyRoot);
+  if (
+    relativeRoot === "" ||
+    relativeRoot === ".." ||
+    relativeRoot.startsWith(`..${sep}`)
+  ) {
+    return true;
+  }
+  const tracked = await gitRunner(packageWorkspace, [
+    "ls-files",
+    "-z",
+    "--",
+    relativeRoot,
+  ]);
+  return tracked.exitCode !== 0 || tracked.stdout.length > 0;
+}
+
+async function trackedDependencyRoots(
+  packageWorkspace: string,
+  gitRunner: GitRunner,
+): Promise<readonly string[]> {
+  const manifests = await gitRunner(packageWorkspace, [
+    "ls-files",
+    "-z",
+    "--",
+    "package.json",
+    ":(glob)**/package.json",
+  ]);
+  if (manifests.exitCode !== 0) {
+    return [];
+  }
+  const roots: string[] = [];
+  for (const manifest of manifests.stdout.split("\0")) {
+    if (!manifest) {
+      continue;
+    }
+    const packageRoot = join(packageWorkspace, dirname(manifest));
+    const dependencyRoot = packageDependencyRoot(packageRoot);
+    if (
+      dependencyRoot &&
+      isUnder(dependencyRoot, packageWorkspace) &&
+      !(await containsTrackedFiles(packageWorkspace, dependencyRoot, gitRunner))
+    ) {
+      roots.push(dependencyRoot);
+    }
+  }
+  return normalizeRoots(roots);
+}
+
 async function dependencyInstallationRoots(
   workspaceRoot: string,
   gitRunner: GitRunner,
 ): Promise<readonly string[]> {
+  const localRoots = await trackedDependencyRoots(workspaceRoot, gitRunner);
   const candidate = ancestorPackageWorkspace(workspaceRoot);
   if (!candidate) {
-    return [];
+    return localRoots;
   }
   const worktrees = await gitRunner(workspaceRoot, [
     "worktree",
@@ -254,13 +319,13 @@ async function dependencyInstallationRoots(
     "-z",
   ]);
   if (worktrees.exitCode !== 0) {
-    return [];
+    return localRoots;
   }
   let packageWorkspace: string;
   try {
     packageWorkspace = canonicalExisting(candidate);
   } catch {
-    return [];
+    return localRoots;
   }
   const registered = worktrees.stdout
     .split("\0")
@@ -275,31 +340,12 @@ async function dependencyInstallationRoots(
       }
     })
   ) {
-    return [];
+    return localRoots;
   }
-  const manifests = await gitRunner(packageWorkspace, [
-    "ls-files",
-    "-z",
-    "--",
-    "package.json",
-    ":(glob)**/package.json",
+  return normalizeRoots([
+    ...localRoots,
+    ...(await trackedDependencyRoots(packageWorkspace, gitRunner)),
   ]);
-  if (manifests.exitCode !== 0) {
-    return [];
-  }
-  const roots = manifests.stdout.split("\0").flatMap((manifest) => {
-    if (!manifest) {
-      return [];
-    }
-    const path = join(packageWorkspace, dirname(manifest), "node_modules");
-    try {
-      const canonical = canonicalExisting(path);
-      return isUnder(canonical, packageWorkspace) ? [canonical] : [];
-    } catch {
-      return [];
-    }
-  });
-  return normalizeRoots(roots);
 }
 
 export async function resolveSandboxPolicy(

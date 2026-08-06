@@ -155,12 +155,13 @@ describe("Sandbox policy", () => {
     expect(policy.writableRoots).not.toContain(realpathSync(root));
   });
 
-  it("grants dependency installations from a containing package workspace", async () => {
+  it("grants dependency runtime state from the active and containing package workspaces", async () => {
     const root = directory("nested-worktree");
     const linked = join(root, ".pi", "worktrees", "linked");
     const temporary = directory("nested-temporary");
     const home = directory("nested-home");
     const rootModules = join(root, "node_modules");
+    const linkedModules = join(linked, "node_modules");
     const packageRoot = join(root, "packages", "feature");
     const packageModules = join(packageRoot, "node_modules");
     const escapedPackageRoot = join(root, "packages", "escaped");
@@ -183,6 +184,7 @@ describe("Sandbox policy", () => {
     git(root, ["add", "package.json", ".gitignore", "packages"]);
     git(root, ["commit", "-m", "initial"]);
     git(root, ["worktree", "add", "-b", "linked", linked]);
+    mkdirSync(linkedModules);
 
     const policy = await resolveSandboxPolicy({
       sessionCwd: linked,
@@ -193,6 +195,9 @@ describe("Sandbox policy", () => {
     });
 
     expect(policy.workspaceRoot).toBe(realpathSync(linked));
+    const expectedRoots = [rootModules, linkedModules, packageModules].map(
+      (path) => realpathSync(path),
+    );
     expect(policy.writableRoots).toEqual(
       expect.arrayContaining([
         realpathSync(rootModules),
@@ -200,10 +205,7 @@ describe("Sandbox policy", () => {
       ]),
     );
     expect(policy.dependencyRoots).toEqual(
-      expect.arrayContaining([
-        realpathSync(rootModules),
-        realpathSync(packageModules),
-      ]),
+      expect.arrayContaining(expectedRoots),
     );
     expect(policy.writableRoots).not.toContain(realpathSync(root));
     expect(policy.writableRoots).not.toContain(realpathSync(escapedTarget));
@@ -215,12 +217,60 @@ describe("Sandbox policy", () => {
     const readOnlyRoots = readOnlyArguments.filter((value) =>
       /^root\d+=/.test(value),
     );
-    expect(readOnlyRoots).not.toEqual(
-      expect.arrayContaining([
-        expect.stringContaining(realpathSync(rootModules)),
-        expect.stringContaining(realpathSync(packageModules)),
-      ]),
+    expect(readOnlyRoots).toEqual(
+      expect.arrayContaining(
+        expectedRoots.map((root) => expect.stringContaining(root)),
+      ),
     );
+  });
+
+  it("rejects dependency roots containing tracked source", async () => {
+    const root = directory("tracked-dependencies");
+    const nested = join(root, "packages", "nested");
+    const rootModules = join(root, "node_modules");
+    const nestedModules = join(nested, "node_modules");
+    git(root, ["init"]);
+    mkdirSync(rootModules);
+    mkdirSync(nestedModules, { recursive: true });
+    writeFileSync(join(root, "package.json"), '{"private":true}\n');
+    writeFileSync(join(nested, "package.json"), '{"private":true}\n');
+    writeFileSync(join(rootModules, "tracked.js"), "root\n");
+    writeFileSync(join(nestedModules, "tracked.js"), "nested\n");
+    git(root, ["add", "-f", "."]);
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      temporaryDir: root,
+      standardTemporaryRoots: [],
+      env: {},
+    });
+
+    expect(policy.dependencyRoots).toEqual([]);
+  });
+
+  it("rejects dependency roots that relabel source or external directories through symlinks", async () => {
+    for (const target of ["source", "external"] as const) {
+      const root = directory(`dependency-link-${target}`);
+      const source = join(root, "source");
+      const external = directory(`dependency-link-${target}-external`);
+      mkdirSync(source);
+      git(root, ["init"]);
+      writeFileSync(join(root, "package.json"), '{"private":true}\n');
+      git(root, ["add", "package.json"]);
+      symlinkSync(
+        target === "source" ? source : external,
+        join(root, "node_modules"),
+      );
+
+      const policy = await resolveSandboxPolicy({
+        sessionCwd: root,
+        temporaryDir: root,
+        standardTemporaryRoots: [],
+        env: {},
+      });
+
+      expect(policy.dependencyRoots).toEqual([]);
+    }
   });
 
   it("normalizes the configured and standard temporary roots", async () => {

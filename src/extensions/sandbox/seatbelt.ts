@@ -190,7 +190,11 @@ function writableProjection(
   if (writeMode === "workspace-write") {
     return policy.writableRoots;
   }
-  return [...policy.temporaryRoots, ...policy.cacheRoots].filter(
+  return [
+    ...policy.temporaryRoots,
+    ...policy.cacheRoots,
+    ...policy.dependencyRoots,
+  ].filter(
     (root, index, roots) =>
       roots.findIndex((candidate) => candidate === root) === index,
   );
@@ -217,6 +221,53 @@ function protectedParameters(roots: readonly string[]): string[] {
   return roots.map((root, index) => `protected${index}=${root}`);
 }
 
+function exceptionParameters(roots: readonly string[]): string[] {
+  return roots.map((root, index) => `exception${index}=${root}`);
+}
+
+function repositoryExceptions(
+  policy: SandboxPolicy,
+  repositoryRoots: readonly string[],
+): readonly string[] {
+  return policy.dependencyRoots.filter((dependencyRoot) =>
+    repositoryRoots.some(
+      (repositoryRoot) =>
+        dependencyRoot !== repositoryRoot &&
+        pathIsWithin(dependencyRoot, repositoryRoot),
+    ),
+  );
+}
+
+function exceptionIndices(
+  repositoryRoot: string,
+  exceptions: readonly string[],
+): readonly number[] {
+  return exceptions.flatMap((exception, index) =>
+    exception !== repositoryRoot && pathIsWithin(exception, repositoryRoot)
+      ? [index]
+      : [],
+  );
+}
+
+function protectedFilter(
+  kind: "literal" | "subpath",
+  protectedIndex: number,
+  exceptionIndices: readonly number[],
+): string {
+  const protectedPath = `(${kind} (param "protected${protectedIndex}"))`;
+  if (exceptionIndices.length === 0) {
+    return protectedPath;
+  }
+  const exceptions = exceptionIndices
+    .map((index) => `      (${kind} (param "exception${index}"))`)
+    .join("\n");
+  return `(require-all
+    ${protectedPath}
+    (require-not
+      (require-any
+${exceptions})))`;
+}
+
 export function sandboxProfile(
   policy: SandboxPolicy,
   marker?: string,
@@ -225,6 +276,7 @@ export function sandboxProfile(
   const writableRoots = writableProjection(policy, writeMode);
   const creationRoots = creationProjection(policy, writeMode, writableRoots);
   const repositoryRoots = protectedRoots(policy);
+  const exceptions = repositoryExceptions(policy, repositoryRoots);
   assertPaths(writableRoots, true);
   assertPaths(repositoryRoots, true);
   assertCreationRoots(creationRoots, writableRoots);
@@ -242,10 +294,13 @@ export function sandboxProfile(
   const denies =
     writeMode === "repository-read-only"
       ? `\n${repositoryRoots
-          .flatMap((_, index) => [
-            `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") (literal (param "protected${index}")))`,
-            `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") (subpath (param "protected${index}")))`,
-          ])
+          .flatMap((repositoryRoot, index) => {
+            const indices = exceptionIndices(repositoryRoot, exceptions);
+            return [
+              `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") ${protectedFilter("literal", index, indices)})`,
+              `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") ${protectedFilter("subpath", index, indices)})`,
+            ];
+          })
           .join("\n")}`
       : "";
   return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${allow}${denies}`;
@@ -262,6 +317,7 @@ export function sandboxArguments(
   const writeMode = options.writeMode ?? "workspace-write";
   const writableRoots = writableProjection(options.policy, writeMode);
   const repositoryRoots = protectedRoots(options.policy);
+  const exceptions = repositoryExceptions(options.policy, repositoryRoots);
   assertPaths(repositoryRoots, true);
   const creationRoots = creationProjection(
     options.policy,
@@ -272,7 +328,10 @@ export function sandboxArguments(
     ...writableRoots.map((root, index) => `root${index}=${root}`),
     ...creationParameters(creationRoots),
     ...(writeMode === "repository-read-only"
-      ? protectedParameters(repositoryRoots)
+      ? [
+          ...protectedParameters(repositoryRoots),
+          ...exceptionParameters(exceptions),
+        ]
       : []),
   ];
   return [

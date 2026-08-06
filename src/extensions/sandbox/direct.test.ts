@@ -112,6 +112,28 @@ describe("Sandbox direct writes", () => {
     });
   });
 
+  it("keeps direct mutation repository-read-only even for dependency runtime state", () => {
+    const { policy, workspace } = fixture();
+    const dependencyRoot = join(workspace, "node_modules");
+    mkdirSync(dependencyRoot);
+    const dependencyPolicy = {
+      ...policy,
+      dependencyRoots: [realpathSync(dependencyRoot)],
+    };
+
+    expect(
+      decideDirectWrite(
+        "node_modules/.vite/results.json",
+        dependencyPolicy,
+        "repository-read-only",
+      ),
+    ).toMatchObject({
+      kind: "deny",
+      reason:
+        "Sandbox: repository-read-only children cannot modify the repository.",
+    });
+  });
+
   it("retains the session-subdirectory base while checking the worktree root", () => {
     const { policy, workspace } = fixture();
     const child = join(workspace, "child");

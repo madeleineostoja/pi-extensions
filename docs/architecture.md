@@ -66,7 +66,7 @@ Stateful cross-entrypoint coordination uses an explicit host identity:
 - Each child receives a distinct event bus and isolated Processes runtime.
 - Child Sandbox policy is a spawn-time snapshot, not live synchronization.
 
-On enabled macOS sessions, repository-read-only children deny writes to their workspace or worktree, worktree Git directory, and common Git directory after dynamic Seatbelt allows. Linux has no kernel enforcement. This is trusted-agent accidental-write protection, not hostile-code isolation.
+On enabled macOS sessions, repository-read-only children deny source and Git writes after dynamic Seatbelt allows, while exempting discovered package `node_modules` trees as disposable Bash runtime state. Direct `write` and `edit` remain denied across the repository. Linux has no kernel enforcement. This is trusted-agent accidental-write protection, not hostile-code isolation.
 
 ## Shared concurrent files
 
