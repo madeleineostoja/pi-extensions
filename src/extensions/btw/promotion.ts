@@ -2,7 +2,7 @@ import {
   getMarkdownTheme,
   type MessageRenderer,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Text } from "@earendil-works/pi-tui";
+import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 import { compactDisplayText } from "#lib/ui/tool-result-renderer";
 
 export const BTW_MESSAGE_TYPE = "btw";
@@ -48,13 +48,9 @@ export const renderBtwMessage: MessageRenderer<BtwMessageDetails> = (
   if (!details || typeof details.question !== "string") {
     return undefined;
   }
-  const view = new Container();
-  view.addChild(
-    new Text(theme.bold(theme.fg("customMessageLabel", "btw")), 0, 0),
-  );
-  view.addChild(
-    new Text(theme.fg("customMessageText", details.question), 0, 0),
-  );
+  const view = new Box(1, 1, (text) => theme.bg("toolSuccessBg", text));
+  view.addChild(new Text(theme.bold(theme.fg("toolTitle", "btw")), 0, 0));
+  view.addChild(new Text(theme.fg("toolOutput", details.question), 0, 0));
   if (!options.expanded) {
     return view;
   }
@@ -65,7 +61,7 @@ export const renderBtwMessage: MessageRenderer<BtwMessageDetails> = (
   }
   view.addChild(new Text(theme.bold("Question"), 0, 0));
   view.addChild(
-    new Text(theme.fg("customMessageText", exchange.question), 0, 0),
+    new Text(theme.fg("toolOutput", exchange.question), 0, 0),
   );
   view.addChild(new Text(theme.bold("Answer"), 0, 0));
   view.addChild(new Markdown(exchange.answer, 0, 0, getMarkdownTheme()));

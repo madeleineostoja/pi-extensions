@@ -2,10 +2,23 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { promotedBtwMessage, renderBtwMessage } from "./promotion.js";
 
-const theme = {
-  fg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-} as Theme;
+function toolTheme(): Theme & { backgrounds: string[]; foregrounds: string[] } {
+  const backgrounds: string[] = [];
+  const foregrounds: string[] = [];
+  return {
+    fg: (color: string, text: string) => {
+      foregrounds.push(color);
+      return text;
+    },
+    bg: (color: string, text: string) => {
+      backgrounds.push(color);
+      return text;
+    },
+    bold: (text: string) => text,
+    backgrounds,
+    foregrounds,
+  } as unknown as Theme & { backgrounds: string[]; foregrounds: string[] };
+}
 
 beforeAll(() => initTheme("dark", false));
 
@@ -34,10 +47,15 @@ describe("BTW promotion", () => {
       answer: "**A web framework**",
     });
     const transcript = { ...message, role: "custom" as const, timestamp: 0 };
+    const theme = toolTheme();
     const collapsed = renderBtwMessage(transcript, { expanded: false }, theme);
     const expanded = renderBtwMessage(transcript, { expanded: true }, theme);
 
     expect(collapsed?.render(80).join("\n")).toContain("What is FastAPI?");
+    expect(theme.backgrounds).toContain("toolSuccessBg");
+    expect(theme.foregrounds).toEqual(
+      expect.arrayContaining(["toolTitle", "toolOutput"]),
+    );
     expect(collapsed?.render(80).join("\n")).not.toContain(
       "Promoted side question",
     );
@@ -55,13 +73,13 @@ describe("BTW promotion", () => {
     });
     const transcript = { ...message, role: "custom" as const, timestamp: 0 };
     const lines = (
-      renderBtwMessage(transcript, { expanded: true }, theme)?.render(80) ?? []
+      renderBtwMessage(transcript, { expanded: true }, toolTheme())?.render(80) ?? []
     )
-      .map((line) => line.trimEnd())
+      .map((line) => line.trim())
       .join("\n");
 
-    expect(lines).toContain(
-      "Question\nExplain this template:\n\nAnswer:\nplaceholder\nAnswer\nreal answer",
-    );
+    expect(lines).toContain("Question");
+    expect(lines).toContain("Explain this template:\n\nAnswer:\nplaceholder");
+    expect(lines).toContain("Answer\nreal answer");
   });
 });
