@@ -56,31 +56,15 @@ export function buildWelcomeGreeting(
     ? [
         `Welcome back${name}.`,
         `Here we are again${name}.`,
-        `Back at it${name} — shall we?`,
+        `Back at it${name}.`,
       ]
     : dirty
-      ? [
-          `Ready when you are${name}.`,
-          `Hey there${name} — let’s get to it.`,
-          `All set${name} — shall we?`,
-        ]
+      ? [`Ready when you are${name}.`, `Hey there${name}.`, `All set${name}.`]
       : timeBand === "morning"
-        ? [
-            `Good morning${name}.`,
-            `Morning${name} — shall we?`,
-            `Hey there${name} — let’s get to it.`,
-          ]
+        ? [`Good morning${name}.`, `Morning${name}.`, `Hey there${name}.`]
         : timeBand === "afternoon"
-          ? [
-              `Good afternoon${name}.`,
-              `Hey there${name} — let’s get to it.`,
-              `Afternoon${name} — what are we making?`,
-            ]
-          : [
-              `Good evening${name}.`,
-              `Evening${name} — what are we making?`,
-              `Hey there${name} — let’s get to it.`,
-            ];
+          ? [`Good afternoon${name}.`, `Hey there${name}.`, `Afternoon${name}.`]
+          : [`Good evening${name}.`, `Evening${name}.`, `Hey there${name}.`];
   return choices[
     choose(seed, `${timeBand}:${returning}:${dirty}`, choices.length)
   ]!;
