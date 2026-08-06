@@ -72,7 +72,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 ### Session utilities
 
 - **UI** presents compact session status and bounded live activity.
-- **Personality** greets fresh sessions and gives unnamed sessions useful titles.
+- **Personality** gives fresh sessions a contextual welcome and unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
 - **BTW** answers one ephemeral side question with the current model and session context; press `s` after completion to promote a useful exchange into the transcript and context.
 

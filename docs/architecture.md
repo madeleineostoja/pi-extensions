@@ -37,23 +37,23 @@ Generic modules used by at least two features live in `src/lib/`. There is no ba
 
 Cross-feature coupling is explicit, narrow, typed, and producer-owned.
 
-| Capability                  | Owner          | Consumers                       | Purpose                                                                             |
-| --------------------------- | -------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
-| `#sandbox/runtime`          | Sandbox        | Subagents                       | Snapshot Sandbox state and requested child write mode at child creation             |
-| `#sandbox/bash`             | Sandbox        | Context, Processes              | Run ordinary Bash or start a managed execution lease without exposing Sandbox state |
-| `#context/retained-result`  | Context        | Processes                       | Encode and decode side-effect-free recallable result envelopes                      |
-| `#subagents/runtime`        | Subagents      | Implement                       | Run trusted managed agents                                                          |
-| `#subagents/completion`     | Subagents      | Implement                       | Share the stateless managed-completion final-action protocol                        |
-| `#personality/session-name` | Personality    | Implement                       | Generate the active Implement-run session name                                      |
-| `#ui/activity`              | UI             | Processes, Subagents, Implement | Publish bounded source-qualified live activity                                      |
-| `#ui/status`                | UI             | Status producers                | Publish immediate footer status without transferring producer ownership             |
-| `#lib/ui/*`                 | Shared library | UI consumers                    | Reuse concrete presentation helpers                                                 |
+| Capability                  | Owner          | Consumers                       | Purpose                                                                               |
+| --------------------------- | -------------- | ------------------------------- | ------------------------------------------------------------------------------------- |
+| `#sandbox/runtime`          | Sandbox        | Subagents                       | Snapshot Sandbox state and requested child write mode at child creation               |
+| `#sandbox/bash`             | Sandbox        | Context, Processes              | Run ordinary Bash or start a managed execution lease without exposing Sandbox state   |
+| `#context/retained-result`  | Context        | Processes                       | Encode and decode side-effect-free recallable result envelopes                        |
+| `#subagents/runtime`        | Subagents      | Implement                       | Run trusted managed agents                                                            |
+| `#subagents/completion`     | Subagents      | Implement                       | Share the stateless managed-completion final-action protocol                          |
+| `#personality/session-name` | Personality    | Implement                       | Generate session names and carry the event-bus-keyed Implement naming-ownership claim |
+| `#ui/activity`              | UI             | Processes, Subagents, Implement | Publish bounded source-qualified live activity                                        |
+| `#ui/status`                | UI             | Status producers                | Publish immediate footer status without transferring producer ownership               |
+| `#lib/ui/*`                 | Shared library | UI consumers                    | Reuse concrete presentation helpers                                                   |
 
 Consumers never import another feature's registration root. A new mapping requires a real consumer, an acyclic dependency, a narrow producer-owned type, a `package.json#imports` declaration, Pi Jiti/Vitest/TypeScript resolution coverage, and updates to this guide and `AGENTS.md`.
 
 Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
 
-UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the synchronous fresh-session welcome and Implement naming.
+UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the asynchronous-context fresh-session welcome and naming generation; Implement owns active-run lifecycle and applies its authoritative name.
 
 ## Separate loaders and explicit coordination
 
@@ -61,7 +61,7 @@ Pi loads entrypoints through separate Jiti instances. Shared pure helpers and ty
 
 Stateful cross-entrypoint coordination uses an explicit host identity:
 
-- Subagents' coordinator and Sandbox's child-mode handoff are keyed by Pi's event bus.
+- Subagents' coordinator, Sandbox's child-mode handoff, and Personality's Implement naming-ownership claim are keyed by Pi's event bus.
 - Sandbox installs its Bash executor only after constructing the session runtime and revokes it during shutdown.
 - Each child receives a distinct event bus and isolated Processes runtime.
 - Child Sandbox policy is a spawn-time snapshot, not live synchronization.

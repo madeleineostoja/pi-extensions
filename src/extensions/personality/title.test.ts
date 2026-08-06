@@ -37,6 +37,8 @@ describe("buildTitlePrompt", () => {
     expect(result.userText).toContain("Implement a red-black tree in Rust");
     expect(result.userText).toContain("3\u20136 words");
     expect(result.userText).toContain("max 40 characters");
+    expect(result.userText).toContain("current request is authoritative");
+    expect(result.userText).toContain("incidental Git state");
     expect(result.systemPrompt).toContain("No quotes");
   });
 
@@ -61,5 +63,7 @@ describe("buildTitlePrompt", () => {
     expect(result.systemPrompt).toContain("active Pipkin Implement run");
     expect(result.systemPrompt).toContain("beginning with Implement");
     expect(result.userText).toContain("# Managed processes");
+    expect(result.userText).toContain("root plan excerpt is authoritative");
+    expect(result.userText).toContain("Git activity alone never justifies it");
   });
 });

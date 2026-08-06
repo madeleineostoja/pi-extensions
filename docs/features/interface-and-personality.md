@@ -23,18 +23,18 @@ UI does not replace Pi's editor, working indicator, selectors, built-in tool ren
 
 ## Session naming
 
-Personality gives an unnamed session a short title from up to three early non-empty prompts. It uses the `utility` model preset asynchronously, so naming never delays the main agent turn, and writes Pi's canonical session name for `/resume`, terminal titles, and window titles.
+Personality gives an unnamed session a short title from up to three early non-empty prompts. It uses the `utility` model preset asynchronously, so naming never delays the main agent turn, and writes Pi's canonical session name for `/resume`, terminal titles, and window titles. Bounded branch, changed-area, recent-commit, and recent-session context can disambiguate the request, but the request remains the title's subject. Evidence from recent sessions may support a compact continuity touch such as `Continue …` or `— again`; incidental Git activity does not.
 
-Personality never replaces a manually assigned or existing ordinary-session name. If the utility model cannot run, it derives a local fallback from the initial prompt. Titles use the first non-empty generated line, remove labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
+Personality never replaces a manually assigned or existing ordinary-session name. If the utility model cannot run, it derives a local fallback from the initial prompt. Titles use the first non-empty generated line, remove labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary. When an automatic title is applied in the TUI, Personality quietly announces it with a small mascot notification.
 
-When an Implement run or restart successfully starts, it receives an asynchronous `Implement …` title based on a bounded excerpt of the root plan. The active run owns session identity, so this replaces an earlier name. Invalid or unavailable generation falls back to `Implement run`. Blocked, control, and all-checked no-op commands leave the name unchanged.
+When an Implement run or restart successfully starts, it claims naming ownership before its asynchronous title lookup. It receives an `Implement …` title based on a bounded excerpt of the root plan; repository context can only disambiguate that authoritative plan and continuity wording is deliberately conservative. The active run owns session identity, so this replaces an earlier name and its Activity title. Invalid or unavailable generation falls back to `Implement run`. Blocked, control, and all-checked no-op commands leave the name unchanged.
 
 See [Configuration](../configuration.md#model-presets) for model routing.
 
 ## Fresh-session welcome
 
-On an empty fresh TUI startup or `/new`, Personality shows a synchronous one- or two-line greeting. It may use the configured nickname and local time band, and includes only the workspace basename as muted detail.
+On an empty fresh TUI startup or `/new`, Personality shows a compact passive identity card with a small kaomoji mascot, a stable varied greeting, and one friendly context signal. Greetings use the optional configured nickname, local time band, and supported continuity; a stable session seed keeps wording fixed across rerenders. The single subline prioritizes changed files, then a recent meaningful session, then the latest commit, and finally a friendly fallback. It deliberately does not repeat repository, branch, model, cost, or other operational UI facts.
 
-The greeting disappears on first accepted input or a session-name update. It never appears on reload, resume, or fork, waits for no model or history lookup, and does not change session naming.
+The card collects its bounded recent-session and read-only Git context before installing, so it never flashes a provisional card. Missing history or Git information simply falls back gracefully. It disappears on first accepted input or a session-name update, and never appears on reload, resume, or fork.
 
 See [Nickname](../configuration.md#nickname) for configuration.

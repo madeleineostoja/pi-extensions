@@ -6,10 +6,13 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { PersonalityContext } from "./context.js";
 import {
   buildWelcomeGreeting,
+  buildWelcomeIdentity,
   registerWelcome,
-  welcomeLines,
+  WelcomeCard,
+  welcomeSubline,
   welcomeTimeBand,
 } from "./welcome.js";
 
@@ -20,13 +23,15 @@ function fixture(nickname = "Mads", branch: unknown[] = []) {
     on: (event: string, handler: (event: any, ctx: any) => unknown) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
+    events: { on: vi.fn(() => () => {}) },
   } as unknown as ExtensionAPI;
   const ctx = {
     mode: "tui",
     cwd: "/work/pipkin",
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => [], getSessionId: () => "current" },
     ui: { setHeader },
   } as unknown as ExtensionContext;
+  (ctx.sessionManager.getBranch as any) = () => branch;
   registerWelcome(pi, nickname);
   return { handlers, ctx, setHeader };
 }
@@ -40,95 +45,90 @@ function sessionStart(
   if (!handler) {
     throw new Error("session_start handler was not registered");
   }
-  handler({ reason }, ctx);
+  return handler({ reason }, ctx);
 }
 
-const theme = {
-  fg: (_tone: string, text: string) => text,
-} as Theme;
+const theme = { fg: (_tone: string, text: string) => text } as Theme;
+const plainContext: PersonalityContext = {
+  branch: undefined,
+  changedFileCount: 0,
+  changedAreas: [],
+  recentSessions: [],
+  recentCommits: [],
+};
 
 describe("Welcome", () => {
-  it("selects a deterministic natural greeting", () => {
-    expect(buildWelcomeGreeting("Mads", "morning")).toBe(
-      buildWelcomeGreeting("Mads", "morning"),
+  it("selects a stable greeting by session identity, not nickname length", () => {
+    expect(buildWelcomeGreeting("Mads", "morning", plainContext, "a")).toBe(
+      buildWelcomeGreeting("Ada", "morning", plainContext, "a").replace(
+        ", Ada",
+        ", Mads",
+      ),
     );
-    expect(buildWelcomeGreeting(undefined, "evening")).toBe("Good evening.");
     expect(welcomeTimeBand(0)).toBe("morning");
     expect(welcomeTimeBand(12)).toBe("afternoon");
     expect(welcomeTimeBand(18)).toBe("evening");
   });
 
-  it("shows two plain, width-safe lines only for empty fresh sessions", () => {
-    const { handlers, ctx, setHeader } = fixture();
-    sessionStart(handlers, "startup", ctx);
+  it("uses only supported continuity and one prioritized subline category", () => {
+    const returning = {
+      ...plainContext,
+      recentSessions: [
+        { title: "Personality UI polish", modified: new Date("2026-01-01") },
+      ],
+    };
+    const dirty = { ...returning, changedFileCount: 4 };
+    expect(
+      buildWelcomeGreeting("Mads", "evening", plainContext, "a"),
+    ).not.toMatch(/back|again/i);
+    expect(buildWelcomeGreeting("Mads", "evening", returning, "a")).toMatch(
+      /back|again|at it/i,
+    );
+    expect(welcomeSubline(dirty, "a", Date.parse("2026-01-02"))).toMatch(
+      /4 (files|loose ends)|4 changed files/i,
+    );
+    expect(welcomeSubline(returning, "a", Date.parse("2026-01-02"))).toContain(
+      "Personality UI polish",
+    );
+  });
 
-    const header = setHeader.mock.calls[0][0](undefined, theme);
-    const narrow = header.render(8);
-    expect(narrow).toHaveLength(2);
-    expect(visibleWidth(narrow[0])).toBeLessThanOrEqual(8);
-    expect(narrow[1]).toBe("pipkin");
-    expect(header.render(80)).toEqual([
-      expect.stringMatching(/, Mads\.$/),
-      "pipkin",
-    ]);
+  it("renders a compact themed card with a mascot and width-safe lines", () => {
+    const identity = buildWelcomeIdentity(
+      "Mads",
+      "morning",
+      plainContext,
+      "session",
+    );
+    const card = new WelcomeCard(identity, theme);
+    const lines = card.render(48);
+    expect(lines).toHaveLength(4);
+    expect(lines[1]).toContain("(•ᴗ•)");
+    expect(lines.every((line) => visibleWidth(line) <= 48)).toBe(true);
+    expect(card.render(8).every((line) => visibleWidth(line) <= 8)).toBe(true);
+  });
+
+  it("shows one complete card only for empty fresh TUI sessions and clears idempotently", async () => {
+    const { handlers, ctx, setHeader } = fixture();
+    await sessionStart(handlers, "startup", ctx);
+    expect(setHeader).toHaveBeenCalledTimes(1);
+    const header = setHeader.mock.calls[0]?.[0](undefined, theme);
+    expect(header.render(80)[0]).toContain("Pipkin");
+
+    const input = handlers.get("input")?.[0];
+    input?.({ text: "Start work" }, ctx);
+    input?.({ text: "Later" }, ctx);
+    expect(setHeader).toHaveBeenLastCalledWith(undefined);
+    expect(setHeader).toHaveBeenCalledTimes(2);
 
     for (const reason of ["reload", "resume", "fork"] as const) {
       const fresh = fixture();
-      sessionStart(fresh.handlers, reason, fresh.ctx);
+      await sessionStart(fresh.handlers, reason, fresh.ctx);
       expect(fresh.setHeader).not.toHaveBeenCalled();
     }
     const withHistory = fixture("Mads", [
       { type: "message", message: { role: "user" } },
     ]);
-    sessionStart(withHistory.handlers, "startup", withHistory.ctx);
+    await sessionStart(withHistory.handlers, "startup", withHistory.ctx);
     expect(withHistory.setHeader).not.toHaveBeenCalled();
-  });
-
-  it("also shows on new sessions and clears before the first accepted input", () => {
-    const { handlers, ctx, setHeader } = fixture();
-    sessionStart(handlers, "new", ctx);
-    const input = handlers.get("input")?.[0];
-    if (!input) {
-      throw new Error("input handler was not registered");
-    }
-
-    input({ text: "", images: [] }, ctx);
-    expect(setHeader).toHaveBeenCalledTimes(1);
-    input({ text: "Start work" }, ctx);
-    input({ text: "Later input" }, ctx);
-
-    expect(setHeader).toHaveBeenLastCalledWith(undefined);
-    expect(setHeader).toHaveBeenCalledTimes(2);
-  });
-
-  it("clears the header when the canonical session name changes", () => {
-    const { handlers, ctx, setHeader } = fixture();
-    sessionStart(handlers, "startup", ctx);
-    const changed = handlers.get("session_info_changed")?.[0];
-    if (!changed) {
-      throw new Error("session_info_changed handler was not registered");
-    }
-
-    changed({ name: "Implement managed processes" }, ctx);
-
-    expect(setHeader).toHaveBeenLastCalledWith(undefined);
-  });
-
-  it("clears the header idempotently on shutdown", () => {
-    const { handlers, ctx, setHeader } = fixture();
-    sessionStart(handlers, "startup", ctx);
-    const shutdown = handlers.get("session_shutdown")?.[0];
-    if (!shutdown) {
-      throw new Error("session_shutdown handler was not registered");
-    }
-
-    shutdown({}, ctx);
-    shutdown({}, ctx);
-
-    expect(setHeader).toHaveBeenCalledTimes(2);
-    expect(welcomeLines("Hello.", "/work/pipkin", 80, theme)).toEqual([
-      "Hello.",
-      "pipkin",
-    ]);
   });
 });

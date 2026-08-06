@@ -4,7 +4,10 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { presetIssue, type ConfigSnapshot } from "#lib/config";
-import { generateSessionName } from "#personality/session-name";
+import {
+  claimImplementNaming,
+  generateSessionName,
+} from "#personality/session-name";
 import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import {
@@ -392,6 +395,7 @@ export function registerImplementCommand(
       }
       active = result.active;
       nextActivity.update(active.store.read());
+      claimImplementNaming(pi.events);
       beginSessionNaming(
         parsed.planPath,
         ctx,
@@ -429,9 +433,21 @@ export function registerImplementCommand(
     namingRunId = runId;
     const generation = executionGeneration;
 
+    const currentAttempt = () =>
+      !abortController.signal.aborted &&
+      generation === sessionGeneration &&
+      namingAbortController === abortController &&
+      namingRunId === runId &&
+      active?.runId === runId &&
+      activity === ownerActivity &&
+      !terminalRunState(active.store.read());
+
     void readImplementPlanExcerpt(ctx.cwd, planPath)
-      .then((planExcerpt) =>
-        generateSessionName(
+      .then((planExcerpt) => {
+        if (!currentAttempt()) {
+          return undefined;
+        }
+        return generateSessionName(
           ctx,
           {
             utility: config?.config.models.utility,
@@ -442,24 +458,25 @@ export function registerImplementCommand(
           },
           { kind: "implement", planExcerpt },
           abortController.signal,
-        ),
-      )
+        );
+      })
       .then((result) => {
-        if (
-          generation !== sessionGeneration ||
-          namingAbortController !== abortController ||
-          namingRunId !== runId ||
-          active?.runId !== runId ||
-          activity !== ownerActivity ||
-          terminalRunState(active.store.read()) ||
-          result.outcome !== "success"
-        ) {
+        if (!result || !currentAttempt() || result.outcome !== "success") {
           return;
         }
         namingAbortController = undefined;
         namingRunId = undefined;
         pi.setSessionName(result.title);
         ownerActivity.setTitle(result.title);
+        if (ctx.mode === "tui") {
+          ctx.ui.notify(
+            `(•ᴗ•)ゞ I’m calling this run “${result.title}”.`,
+            "info",
+          );
+        }
+      })
+      .catch(() => {
+        // Naming is supplementary to an already-started Implement run.
       });
   }
 }

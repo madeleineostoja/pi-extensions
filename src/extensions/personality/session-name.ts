@@ -1,5 +1,12 @@
 import type { UserMessage } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  EventBus,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  collectPersonalityContext,
+  type PersonalityContext,
+} from "./context.js";
 import { completeText } from "#lib/complete";
 import type { ModelPreset } from "#lib/config";
 import { parseModelRef } from "#lib/model-ref";
@@ -18,12 +25,28 @@ export type SessionNameOptions = {
 type OrdinaryNamingInput = {
   kind: "ordinary";
   promptText: string | readonly string[];
+  context?: PersonalityContext;
 };
 
 type ImplementNamingInput = {
   kind: "implement";
   planExcerpt: string;
+  context?: PersonalityContext;
 };
+
+export const IMPLEMENT_NAMING_CLAIM_CHANNEL =
+  "pipkin:personality:implement-naming-claim";
+
+export function claimImplementNaming(host: EventBus): void {
+  host.emit(IMPLEMENT_NAMING_CLAIM_CHANNEL, undefined);
+}
+
+export function onImplementNamingClaim(
+  host: EventBus,
+  listener: () => void,
+): () => void {
+  return host.on(IMPLEMENT_NAMING_CLAIM_CHANNEL, listener);
+}
 
 export type SessionNameResult =
   | { outcome: "success"; title: string }
@@ -39,6 +62,9 @@ export async function generateSessionName(
   signal: AbortSignal,
 ): Promise<SessionNameResult> {
   const fallback = fallbackTitle(input);
+  if (signal.aborted) {
+    return { outcome: "aborted" };
+  }
   if (input.kind === "implement" && !input.planExcerpt.trim()) {
     return { outcome: "success", title: fallback! };
   }
@@ -82,7 +108,15 @@ export async function generateSessionName(
       );
     }
 
-    const { systemPrompt, userText } = titlePrompt(input);
+    const context =
+      input.context ??
+      (ctx.cwd && ctx.sessionManager
+        ? await collectPersonalityContext(ctx, signal)
+        : undefined);
+    if (signal.aborted) {
+      return { outcome: "aborted" };
+    }
+    const { systemPrompt, userText } = titlePrompt({ ...input, context });
     const userMessage: UserMessage = {
       role: "user",
       content: [{ type: "text", text: userText }],
@@ -155,8 +189,8 @@ function withImplementFallback(
 
 function titlePrompt(input: OrdinaryNamingInput | ImplementNamingInput) {
   return input.kind === "ordinary"
-    ? buildTitlePrompt(input.promptText)
-    : buildImplementTitlePrompt(input.planExcerpt);
+    ? buildTitlePrompt(input.promptText, input.context)
+    : buildImplementTitlePrompt(input.planExcerpt, input.context);
 }
 
 function fallbackTitle(

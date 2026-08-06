@@ -42,12 +42,33 @@ function makeFakePi() {
     sessionName = name;
   });
 
+  const eventListeners = new Map<string, ((event: unknown) => void)[]>();
   const pi = {
     on: (
       event: string,
       handler: (event: unknown, ctx: ExtensionContext) => unknown,
     ) => {
       handlers.set(event, [...(handlers.get(event) || []), handler]);
+    },
+    events: {
+      emit: (channel: string, event: unknown) => {
+        for (const listener of eventListeners.get(channel) ?? []) {
+          listener(event);
+        }
+      },
+      on: (channel: string, listener: (event: unknown) => void) => {
+        eventListeners.set(channel, [
+          ...(eventListeners.get(channel) ?? []),
+          listener,
+        ]);
+        return () =>
+          eventListeners.set(
+            channel,
+            (eventListeners.get(channel) ?? []).filter(
+              (entry) => entry !== listener,
+            ),
+          );
+      },
     },
     getSessionName,
     setSessionName,
@@ -60,7 +81,7 @@ function makeFakePi() {
     utilityIssue: presetIssue(config, "utility")?.message,
     configPath: getConfigPath(agentDir),
   });
-  return { handlers, getSessionName, setSessionName };
+  return { handlers, getSessionName, setSessionName, events: pi.events };
 }
 
 function makeExtensionCtx(options?: {
@@ -111,8 +132,9 @@ function titlePromptForCall(index: number) {
 }
 
 async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 6; index++) {
+    await Promise.resolve();
+  }
 }
 
 describe("automatic session naming", () => {
@@ -172,6 +194,7 @@ describe("automatic session naming", () => {
     );
 
     await beforeAgentStart({ prompt: "Implement a plan task" }, ctx);
+    await flushPromises();
     const requestSignal = completeTextMock.mock.calls[0][2]
       .signal as AbortSignal;
     await sessionShutdown({}, ctx);
@@ -193,7 +216,7 @@ describe("automatic session naming", () => {
 
   it("does not start competing title generations from later prompts", async () => {
     const { handlers, setSessionName } = makeFakePi();
-    const { ctx } = makeExtensionCtx();
+    const { ctx, notifications } = makeExtensionCtx();
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
     let resolveComplete: (value: unknown) => void = () => {};
     completeTextMock.mockReturnValue(
@@ -217,6 +240,10 @@ describe("automatic session naming", () => {
     await flushPromises();
 
     expect(setSessionName).toHaveBeenCalledWith("Initial prompt fix");
+    expect(notifications).toContainEqual({
+      message: "(•ᴗ•)ゞ I’m calling this one “Initial prompt fix”.",
+      type: "info",
+    });
   });
 
   it("uses minimal reasoning for title generation", async () => {
@@ -260,7 +287,11 @@ describe("automatic session naming", () => {
     expect(setSessionName).toHaveBeenCalledWith(
       "Fix auto name token limit warning",
     );
-    expect(notifications).toEqual([]);
+    expect(notifications).toContainEqual({
+      message:
+        "(•ᴗ•)ゞ I’m calling this one “Fix auto name token limit warning”.",
+      type: "info",
+    });
   });
 
   it("falls back to a local title when no model is configured", async () => {
@@ -281,6 +312,29 @@ describe("automatic session naming", () => {
     expect(setSessionName).toHaveBeenCalledWith(
       "Implement local session naming fallback",
     );
+    expect(notifications).toContainEqual({
+      message:
+        "(•ᴗ•)ゞ I’m calling this one “Implement local session naming fallback”.",
+      type: "info",
+    });
+  });
+
+  it("silently cancels ordinary naming when Implement claims ownership", async () => {
+    const { handlers, setSessionName, events } = makeFakePi();
+    const { ctx, notifications } = makeExtensionCtx();
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    let resolveComplete: (value: unknown) => void = () => {};
+    completeTextMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveComplete = resolve;
+      }),
+    );
+    await handlers.get("session_start")?.[0]({}, ctx);
+    await beforeAgentStart({ prompt: "Ordinary prompt" }, ctx);
+    events.emit("pipkin:personality:implement-naming-claim", undefined);
+    resolveComplete({ ok: false, reason: "aborted", text: "" });
+    await flushPromises();
+    expect(setSessionName).not.toHaveBeenCalled();
     expect(notifications).toEqual([]);
   });
 
@@ -326,13 +380,15 @@ describe("automatic session naming", () => {
       });
 
     await beforeAgentStart({ prompt: "Help me debug this" }, ctx);
-    await flushPromises();
-    await beforeAgentStart(
-      { prompt: "The auto-name extension uses the second prompt" },
-      ctx,
-    );
+    await vi.waitFor(() => expect(completeTextMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => {
+      await beforeAgentStart(
+        { prompt: "The auto-name extension uses the second prompt" },
+        ctx,
+      );
+      expect(completeTextMock).toHaveBeenCalledTimes(2);
+    });
 
-    expect(completeTextMock).toHaveBeenCalledTimes(2);
     expect(titlePromptForCall(1)).toContain("Prompt 1:\nHelp me debug this");
     expect(titlePromptForCall(1)).toContain(
       "Prompt 2:\nThe auto-name extension uses the second prompt",

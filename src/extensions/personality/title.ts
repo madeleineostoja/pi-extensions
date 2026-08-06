@@ -1,3 +1,5 @@
+import type { PersonalityContext } from "./context.js";
+
 const QUOTES = "`\"'\u2018\u2019\u201c\u201d\u00ab\u00bb";
 const QUOTE_EDGE = new RegExp(`^[${QUOTES}]+|[${QUOTES}]+$`, "g");
 const LEADING_LABEL =
@@ -39,12 +41,12 @@ export function sanitizeTitle(raw: string): string | null {
 }
 
 const MAX_PROMPTS_FOR_TITLE = 3;
-const MAX_PROMPT_CONTEXT_CHARS = 2000;
+const MAX_PROMPT_CONTEXT_CHARS = 2_000;
 
-export function buildTitlePrompt(promptContext: string | readonly string[]): {
-  systemPrompt: string;
-  userText: string;
-} {
+export function buildTitlePrompt(
+  promptContext: string | readonly string[],
+  context?: PersonalityContext,
+): { systemPrompt: string; userText: string } {
   const prompts = (
     Array.isArray(promptContext) ? promptContext : [promptContext]
   )
@@ -56,18 +58,18 @@ export function buildTitlePrompt(promptContext: string | readonly string[]): {
     prompts.length === 1 ? "the first user prompt" : "early user prompts";
   const systemPrompt =
     "You name coding sessions. Reply with a concise title only. No quotes, no punctuation at the end.";
-  const userText = `Give this session a short descriptive title (3\u20136 words, max 40 characters) based on ${basis}:\n\n${promptText}`;
+  const userText = `Give this session a short descriptive title (3–6 words, max 40 characters) based on ${basis}. The current request is authoritative: repository context may disambiguate it, never replace its subject or make incidental Git state the title. Put the task-identifying semantic core first. Only add a short continuity suffix such as “— again” or “Continue …” when recent sessions genuinely support it; reserve room for that suffix.\n\nCurrent request:\n${promptText}${formatRepositoryContext(context)}`;
   return { systemPrompt, userText };
 }
 
-export function buildImplementTitlePrompt(planExcerpt: string): {
-  systemPrompt: string;
-  userText: string;
-} {
+export function buildImplementTitlePrompt(
+  planExcerpt: string,
+  context?: PersonalityContext,
+): { systemPrompt: string; userText: string } {
   return {
     systemPrompt:
       "You name coding sessions. This is an active Pipkin Implement run. Reply with a concise title only, beginning with Implement. No quotes, no punctuation at the end.",
-    userText: `Give this active Implement run a short descriptive title (3–6 words, max 40 characters) based only on this root plan excerpt:\n\n${planExcerpt}`,
+    userText: `Give this active Implement run a short descriptive title (3–6 words, max 40 characters). The bounded root plan excerpt is authoritative: repository context may only disambiguate it. Begin with “Implement ” followed by the task-identifying core. Use a brief continuity suffix only with strong recent-session evidence; Git activity alone never justifies it. Reserve room for an optional suffix.\n\nRoot plan excerpt:\n${planExcerpt}${formatRepositoryContext(context)}`,
   };
 }
 
@@ -82,4 +84,32 @@ function formatPromptContext(prompts: string[]): string {
   }
 
   return text.slice(0, MAX_PROMPT_CONTEXT_CHARS).trimEnd();
+}
+
+function formatRepositoryContext(
+  context: PersonalityContext | undefined,
+): string {
+  if (!context) {
+    return "";
+  }
+  const lines = ["\n\nRepository context:"];
+  if (context.branch) {
+    lines.push(`Branch: ${context.branch}`);
+  }
+  if (context.changedAreas.length) {
+    lines.push(`Changed areas: ${context.changedAreas.join(", ")}`);
+  }
+  if (context.recentCommits.length) {
+    lines.push(
+      "Recent commits:",
+      ...context.recentCommits.map((commit) => `- ${commit.subject}`),
+    );
+  }
+  if (context.recentSessions.length) {
+    lines.push(
+      "Recent sessions:",
+      ...context.recentSessions.map((session) => `- ${session.title}`),
+    );
+  }
+  return lines.length === 1 ? "" : lines.join("\n");
 }

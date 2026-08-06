@@ -7,12 +7,14 @@ import type { ActiveRun } from "./run.js";
 import type { RunState } from "./store.js";
 
 const mocks = vi.hoisted(() => ({
+  claimImplementNaming: vi.fn(),
   generateSessionName: vi.fn(),
   startRun: vi.fn(),
   stopRun: vi.fn(),
 }));
 
 vi.mock("#personality/session-name", () => ({
+  claimImplementNaming: mocks.claimImplementNaming,
   generateSessionName: mocks.generateSessionName,
 }));
 
@@ -154,6 +156,7 @@ async function flushPromises() {
 }
 
 afterEach(() => {
+  mocks.claimImplementNaming.mockReset();
   mocks.generateSessionName.mockReset();
   mocks.startRun.mockReset();
   mocks.stopRun.mockReset();
@@ -190,6 +193,7 @@ describe("/implement session naming", () => {
     expect(fixtureState.notifications).toContain(
       "Implement started run run-1.",
     );
+    expect(mocks.claimImplementNaming).toHaveBeenCalledTimes(1);
     expect(fixtureState.activity).toContainEqual(
       expect.objectContaining({ operation: "upsert" }),
     );
@@ -209,6 +213,9 @@ describe("/implement session naming", () => {
 
     expect(fixtureState.setSessionName).toHaveBeenCalledWith(
       "Implement managed processes",
+    );
+    expect(fixtureState.notifications).toContain(
+      "(•ᴗ•)ゞ I’m calling this run “Implement managed processes”.",
     );
     expect(fixtureState.setHeader).toHaveBeenLastCalledWith(undefined);
   });
