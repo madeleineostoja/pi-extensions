@@ -478,6 +478,25 @@ describe("Pipkin bundle", () => {
     expect(
       context?.tools.get("context_recall")?.definition.renderShell,
     ).toBeUndefined();
+    const subagents = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) ===
+        "src/extensions/subagents/index.ts",
+    );
+    const agent = subagents?.tools.get("Agent")?.definition;
+    const agentParameters = JSON.parse(JSON.stringify(agent?.parameters));
+    expect(agent?.description).toContain("return its ID immediately");
+    expect(agentParameters.properties.mode).toBeUndefined();
+    expect(agentParameters.properties.subagent_type.enum).toEqual([
+      "Explore",
+      "Review",
+    ]);
+    expect(
+      subagents?.tools.get("get_subagent_result")?.definition.description,
+    ).toContain("managed subagent");
+    expect(
+      subagents?.tools.get("steer_subagent")?.definition.description,
+    ).toContain("running managed subagent");
     const web = fixture.result.extensions.find(
       (extension) =>
         relativeExtensionPath(extension) === "src/extensions/web/index.ts",

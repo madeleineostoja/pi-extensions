@@ -234,6 +234,46 @@ describe("Activity", () => {
     ).toBe(false);
   });
 
+  it("registers the activity widget only while records exist", () => {
+    const store = new ActivityStore();
+    const setWidget = vi.fn();
+    const dispose = installActivityWidget(
+      { mode: "tui", hasUI: true, ui: { setWidget } } as never,
+      store,
+    );
+
+    expect(setWidget).not.toHaveBeenCalled();
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "upsert",
+      record: record("live"),
+    });
+    expect(setWidget).toHaveBeenLastCalledWith(
+      "pipkin.ui.activity",
+      expect.any(Function),
+      { placement: "aboveEditor" },
+    );
+
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "remove",
+      id: "live",
+    });
+    expect(setWidget).toHaveBeenLastCalledWith("pipkin.ui.activity", undefined);
+    dispose();
+    dispose();
+  });
+
   it("keeps the activity background active after truncated text resets ANSI styles", () => {
     const store = new ActivityStore();
     store.accept({

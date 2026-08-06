@@ -7,6 +7,7 @@ const features = [
   "defaults",
   "ui",
   "personality",
+  "guidance",
   "lsp",
   "processes",
   "subagents",

@@ -37,7 +37,7 @@ describe("Subagent Activity projector", () => {
     });
   });
 
-  it("removes terminal work and notifies a detached background failure once", () => {
+  it("removes terminal work and notifies a public-agent failure once", () => {
     const events = createEventBus();
     const store = new ActivityStore();
     events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
@@ -48,7 +48,6 @@ describe("Subagent Activity projector", () => {
         type: "Explore",
         description: "Inspect renderer ownership",
         rosterVisibility: "show",
-        launchMode: "background" as const,
         status: "running" as const,
         health: {
           contextUsage: { tokens: 82_000 },
@@ -89,7 +88,7 @@ describe("Subagent Activity projector", () => {
     expect(store.records).toEqual([]);
     expect(notify).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledWith(
-      "Background subagent agent-1 failed: provider unavailable",
+      "Managed subagent agent-1 failed: provider unavailable",
       "warning",
     );
   });

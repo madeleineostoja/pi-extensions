@@ -58,7 +58,9 @@ describe("Guidance catalogue", () => {
       expect(prompt).toContain(rule.text);
       for (const omitted of rule.requiredTools) {
         expect(
-          renderGuidance(rule.requiredTools.filter((name) => name !== omitted)),
+          renderGuidance(
+            rule.requiredTools.filter((name) => name !== omitted),
+          ) ?? "",
         ).not.toContain(rule.text);
       }
     }
@@ -78,16 +80,15 @@ describe("Guidance catalogue", () => {
     expect(routing).not.toContain("General");
   });
 
-  it("guides intentional subagent progress inspection without scripting its use", () => {
+  it("guides asynchronous agent starts and one intentional join", () => {
     const prompt = renderGuidance(["Agent", "get_subagent_result"])!;
 
-    expect(prompt).toContain("Inspect partial progress intentionally");
-    expect(prompt).toContain("rather than polling");
-    expect(prompt).toContain(
-      "foreground rather than immediately starting and joining",
-    );
-    expect(prompt).not.toContain("salvage partial work");
-    expect(prompt).not.toContain("before deciding whether to steer");
+    expect(prompt).toContain("Start independent Explore or Review work");
+    expect(prompt).toContain("Continue useful independent work");
+    expect(prompt).toContain("immediate wait:true join");
+    expect(prompt).toContain("do not poll");
+    expect(prompt).not.toContain("foreground");
+    expect(prompt).not.toContain("background");
   });
 
   it("states the complete Papercut qualification boundary", () => {

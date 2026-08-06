@@ -3,7 +3,6 @@ import type { ModelPreset } from "#lib/config";
 import { toolCallRenderer } from "#lib/ui/tool-result-renderer";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import type { ForegroundInterruptGuard } from "./foreground-interrupt.js";
 import { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
 import type { SubagentRuntime } from "./runtime.js";
 import {
@@ -28,12 +27,6 @@ export const PublicAgentParameters = Type.Object(
     description: Type.Optional(
       Type.String({ description: "Short human-readable task summary." }),
     ),
-    mode: Type.Optional(
-      StringEnum(["foreground", "background"] as const, {
-        description:
-          "Default foreground. Use background only when independent work can proceed before the result is needed.",
-      }),
-    ),
     model: Type.Optional(
       Type.String({
         description:
@@ -49,7 +42,7 @@ export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 
 const GetSubagentResultParameters = Type.Object(
   {
-    id: Type.String({ description: "Background subagent id." }),
+    id: Type.String({ description: "Managed subagent id." }),
     wait: Type.Boolean({
       description:
         "false returns current status immediately; true waits for completion and final cleanup.",
@@ -68,7 +61,7 @@ type GetSubagentResultParams = Static<typeof GetSubagentResultParameters>;
 
 const SteerSubagentParameters = Type.Object(
   {
-    id: Type.String({ description: "Background subagent id." }),
+    id: Type.String({ description: "Running managed subagent id." }),
     message: Type.String({ description: "Steering message to send." }),
   },
   { additionalProperties: false },
@@ -100,13 +93,11 @@ export function resolveAgentSelection(
 export function registerPublicAgentTools({
   pi,
   runtime,
-  foregroundInterrupt,
   configPath,
   modelPresets,
 }: {
   pi: ExtensionAPI;
   runtime: SubagentRuntime;
-  foregroundInterrupt: ForegroundInterruptGuard;
   configPath: string;
   modelPresets: Readonly<Partial<Record<"low" | "high", ModelPreset>>>;
 }): void {
@@ -114,55 +105,28 @@ export function registerPublicAgentTools({
     name: "Agent",
     label: "Agent",
     description:
-      "Run an Explore or Review subagent. Foreground returns its completed result; background starts independent work that can later be joined or inspected.",
+      "Start an Explore or Review managed subagent and return its ID immediately. Continue independent work, then join once with get_subagent_result when its result becomes a dependency.",
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const mode = params.mode ?? "foreground";
-      const run = (runSignal = signal) =>
-        runtime.runPublicAgent({
-          type: params.subagent_type,
-          prompt: params.prompt,
-          description: params.description,
-          cwd: ctx.cwd,
-          ...resolveAgentSelection(
-            params.subagent_type,
-            params.model,
-            params.thinking,
-            configPath,
-            modelPresets,
-          ),
-          mode,
-          ctx,
-          signal: runSignal,
-        });
-      let running;
-      if (mode === "foreground") {
-        const controller = new AbortController();
-        const relayAbort = () => controller.abort();
-        if (signal?.aborted) {
-          controller.abort();
-        } else {
-          signal?.addEventListener("abort", relayAbort, { once: true });
-        }
-        running = foregroundInterrupt.run(
-          {
-            type: params.subagent_type,
-            description: params.description ?? params.prompt.slice(0, 120),
-            stop: () => controller.abort(),
-          },
-          async () => {
-            try {
-              return await run(controller.signal);
-            } finally {
-              signal?.removeEventListener("abort", relayAbort);
-            }
-          },
-        );
-      } else {
-        running = run();
+      if (signal?.aborted) {
+        throw new DOMException("Agent start cancelled.", "AbortError");
       }
-      const snapshot = await running;
-      return toolResult(snapshot, mode);
+      const snapshot = await runtime.runPublicAgent({
+        type: params.subagent_type,
+        prompt: params.prompt,
+        description: params.description,
+        cwd: ctx.cwd,
+        ...resolveAgentSelection(
+          params.subagent_type,
+          params.model,
+          params.thinking,
+          configPath,
+          modelPresets,
+        ),
+        mode: "background",
+        ctx,
+      });
+      return toolResult(snapshot, "start");
     },
     renderCall: renderAgentCall,
     renderResult: renderAgentResult,
@@ -172,7 +136,7 @@ export function registerPublicAgentTools({
     name: "get_subagent_result",
     label: "get_subagent_result",
     description:
-      "Join a background subagent or intentionally inspect bounded partial progress. wait:true blocks for completion; wait:false returns its current status immediately.",
+      "Join a managed subagent or intentionally inspect bounded partial progress. wait:true blocks for completion and final cleanup; wait:false returns its current status immediately.",
     parameters: GetSubagentResultParameters,
     renderCall: toolCallRenderer({
       name: "get_subagent_result",
@@ -181,11 +145,12 @@ export function registerPublicAgentTools({
       pending: (args: GetSubagentResultParams) =>
         args.wait ? "Waiting for subagent…" : "Reading subagent state…",
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const response = await runtime.publicResult(
         params.id,
         params.wait,
         params.include_progress ?? false,
+        signal,
       );
       return toolResult(response.snapshot, "status", response.progress);
     },
@@ -196,7 +161,7 @@ export function registerPublicAgentTools({
     name: "steer_subagent",
     label: "steer_subagent",
     description:
-      "Queue guidance for a running background subagent after its current assistant turn's tool calls. Fails for unknown or completed agents.",
+      "Queue guidance for a running managed subagent after its current assistant turn's tool calls. Fails for unknown or completed agents.",
     parameters: SteerSubagentParameters,
     renderCall: toolCallRenderer({
       name: "steer_subagent",

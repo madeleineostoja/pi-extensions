@@ -82,7 +82,9 @@ describe("docs resolution", () => {
       .map((line: string) => line.trimEnd())
       .join("\n");
     expect(call).toBe("docs Acme---Widget");
-    expect(collapsed).toBe("");
+    expect(collapsed).toBe(
+      "Documentation resolved · /acme/widget · provider current",
+    );
     expect(expanded).toContain("provider material");
   });
   it("chooses the first exact normalized match and reports provider-current", async () => {

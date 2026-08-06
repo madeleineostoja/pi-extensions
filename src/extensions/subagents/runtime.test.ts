@@ -68,7 +68,7 @@ function makeSession(result = "done") {
     messages: [] as AgentSession["messages"],
     sessionId: "session-id",
     sessionFile: undefined,
-    subscribe: vi.fn(() => vi.fn()),
+    subscribe: vi.fn<AgentSession["subscribe"]>(() => vi.fn()),
     getAllTools: vi.fn(() => []),
     extensionRunner,
   });
@@ -244,7 +244,7 @@ describe("SubagentRuntime", () => {
     });
 
     expect(queued).toMatchObject({
-      id: "subagent-1",
+      id: "agent-1",
       status: "queued",
       owner: "pipkin:implement",
       type: "General",
@@ -606,12 +606,61 @@ describe("SubagentRuntime", () => {
     const one = runtime.steer(started.id, "first");
     const two = runtime.steer(started.id, "second");
     expect(calls).toEqual(["first"]);
+    expect(runtime.inspect(started.id)?.activity).toMatchObject([
+      { kind: "steering", status: "queued", text: "first" },
+      { kind: "steering", status: "queued", text: "second" },
+    ]);
     first.reject(new Error("rejected"));
     await expect(one).rejects.toThrow("rejected");
     await vi.waitFor(() => expect(calls).toEqual(["first", "second"]));
     second.resolve();
     await expect(two).resolves.toMatchObject({ status: "running" });
     expect(runtime.snapshot(started.id)?.health?.pendingSteering).toBe(0);
+    expect(runtime.inspect(started.id)?.activity).toMatchObject([
+      { kind: "steering", status: "failed", text: "first" },
+      { kind: "steering", status: "queued", text: "second" },
+    ]);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("marks steering delivered from the child user-message boundary without duplicating it", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    let emit: ((event: unknown) => void) | undefined;
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.subscribe = vi.fn<AgentSession["subscribe"]>((listener) => {
+      emit = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    await runtime.steer(started.id, "wrap it up");
+
+    expect(runtime.inspect(started.id)?.activity).toMatchObject([
+      { kind: "steering", status: "queued", text: "wrap it up" },
+    ]);
+    emit?.({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "wrap it up" }],
+      },
+    });
+    expect(runtime.inspect(started.id)?.activity).toMatchObject([
+      { kind: "steering", status: "delivered", text: "wrap it up" },
+    ]);
+    expect(runtime.inspect(started.id)?.activity).toHaveLength(1);
     runtime.stop(started.id);
     promptDone.resolve();
   });
@@ -655,7 +704,7 @@ describe("SubagentRuntime", () => {
 
     expect(
       runtime.inspect(started.id)?.activity.map((entry) => entry.kind),
-    ).toEqual(["steering", "steering", "tool"]);
+    ).toEqual(["steering", "tool"]);
     runtime.stop(started.id);
     promptDone.resolve();
   });

@@ -138,7 +138,6 @@ export type RuntimeSnapshot<TResult = unknown> = {
   extensionBinding: ExtensionBindingStatus;
   canSteer?: boolean;
   rosterVisibility: RosterVisibility;
-  launchMode?: PublicAgentMode;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
   result?: TResult;
@@ -156,10 +155,9 @@ export type QueueSubagentInput = {
   thinking?: ThinkingLevel;
   extensionBinding?: ExtensionBindingStatus;
   rosterVisibility?: RosterVisibility;
-  launchMode?: PublicAgentMode;
 };
 
-export type PublicAgentMode = "foreground" | "background";
+export type ManagedAgentMode = "foreground" | "background";
 
 export type PublicSubagentResult = {
   snapshot: RuntimeSnapshot;
@@ -188,7 +186,7 @@ export type RunManagedAgentInput<
   cwd: string;
   model?: string;
   thinking?: ThinkingLevel;
-  mode?: PublicAgentMode;
+  mode?: ManagedAgentMode;
   ctx: ExtensionContext;
   signal?: AbortSignal;
   owner?: RuntimeOwner;
@@ -245,10 +243,16 @@ type CreateSession = (
 
 type Waiter = {
   resolve: (snapshot: RuntimeSnapshot) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 };
+
+type SteeringActivity = Extract<InspectionActivity, { kind: "steering" }>;
 
 type SteeringDelivery = {
   message: string;
+  activity: SteeringActivity;
   resolve: (snapshot: RuntimeSnapshot) => void;
   reject: (error: Error) => void;
   settled?: boolean;
@@ -353,6 +357,59 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function agentIdSlug(input: QueueSubagentInput): string {
+  if (input.type === "Explore") {
+    return "explore";
+  }
+  if (input.type === "Review") {
+    return "review";
+  }
+  if (
+    typeof input.owner === "object" &&
+    input.owner.kind === "pipkin:implement"
+  ) {
+    return input.owner.role;
+  }
+  const role = input.type
+    .replace(/^pipkin:implement:/, "")
+    .toLocaleLowerCase()
+    .match(/(?:planner|implementer|reviewer|explore|review|agent)/)?.[0];
+  return role ?? "agent";
+}
+
+function abortError(): DOMException {
+  return new DOMException(
+    "Waiting for subagent result cancelled.",
+    "AbortError",
+  );
+}
+
+function waitWithSignal<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 function timestampMs(value: string | undefined): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -414,9 +471,6 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
     extensionBinding: record.extensionBinding,
     ...(record.canSteer === undefined ? {} : { canSteer: record.canSteer }),
     rosterVisibility: record.rosterVisibility,
-    ...(record.launchMode === undefined
-      ? {}
-      : { launchMode: record.launchMode }),
     timestamps: {
       queuedAt: record.queuedAt,
       ...(record.startedAt === undefined
@@ -862,7 +916,7 @@ export class SubagentRuntime {
   }
 
   queue(input: QueueSubagentInput): RuntimeSnapshot {
-    const id = `subagent-${this.#nextId++}`;
+    const id = `${agentIdSlug(input)}-${this.#nextId++}`;
     const timestamp = now();
     const model = input.model;
     const thinking = input.thinking;
@@ -880,9 +934,6 @@ export class SubagentRuntime {
       ...(thinking === undefined ? {} : { thinking }),
       extensionBinding: input.extensionBinding ?? "unbound",
       rosterVisibility: input.rosterVisibility ?? "show",
-      ...(input.launchMode === undefined
-        ? {}
-        : { launchMode: input.launchMode }),
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
@@ -925,7 +976,6 @@ export class SubagentRuntime {
       thinking: input.thinking,
       extensionBinding: "unbound",
       rosterVisibility: input.rosterVisibility,
-      launchMode: input.mode,
     });
     const record = this.#requireRecord(queued.id);
     if (input.completion) {
@@ -1137,13 +1187,19 @@ export class SubagentRuntime {
       throw new Error("Steer message must not be empty");
     }
     return new Promise<RuntimeSnapshot>((resolve, reject) => {
-      record.steeringQueue.push({ message: trimmed, resolve, reject });
-      this.#recordActivity(record, {
+      const activity: SteeringActivity = {
         kind: "steering",
         status: "queued",
         text: truncateUtf8(trimmed),
         timestamp: now(),
+      };
+      record.steeringQueue.push({
+        message: trimmed,
+        activity,
+        resolve,
+        reject,
       });
+      this.#recordActivity(record, activity);
       record.updatedAt = now();
       refreshHealth(record);
       this.#notifyInspectListeners(record);
@@ -1155,12 +1211,11 @@ export class SubagentRuntime {
     id: string,
     wait: boolean,
     includeProgress = false,
+    signal?: AbortSignal,
   ): Promise<PublicSubagentResult> {
     const record = this.#requirePublicRecord(id);
-    if (wait && !isTerminal(record.status)) {
-      await this.#waitForRecord(record);
-    } else if (wait && record.finalization) {
-      await record.finalization;
+    if (wait) {
+      await this.#waitForRecord(record, signal);
     }
     if (!this.#isCurrentRecord(record)) {
       throw new Error(`Unknown subagent ${id}`);
@@ -1194,13 +1249,38 @@ export class SubagentRuntime {
     >;
   }
 
-  #waitForRecord(record: RuntimeRecord): Promise<RuntimeSnapshot> {
+  #waitForRecord(
+    record: RuntimeRecord,
+    signal?: AbortSignal,
+  ): Promise<RuntimeSnapshot> {
     if (isTerminal(record.status)) {
-      return record.finalization ?? Promise.resolve(projectSnapshot(record));
+      return waitWithSignal(
+        record.finalization ?? Promise.resolve(projectSnapshot(record)),
+        signal,
+      );
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const waiter: Waiter = { resolve, reject, signal };
+      const remove = () => {
+        const waiters = this.#waiters.get(record.id) ?? [];
+        const remaining = waiters.filter((candidate) => candidate !== waiter);
+        if (remaining.length === 0) {
+          this.#waiters.delete(record.id);
+        } else {
+          this.#waiters.set(record.id, remaining);
+        }
+      };
+      waiter.onAbort = () => {
+        remove();
+        reject(abortError());
+      };
+      if (signal?.aborted) {
+        waiter.onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", waiter.onAbort, { once: true });
       const waiters = this.#waiters.get(record.id) ?? [];
-      waiters.push({ resolve });
+      waiters.push(waiter);
       this.#waiters.set(record.id, waiters);
     });
   }
@@ -1419,6 +1499,22 @@ export class SubagentRuntime {
           const candidate = isObject(event as unknown)
             ? (event as Record<string, unknown>)
             : undefined;
+          if (candidate?.type === "message_start") {
+            const message = objectValue(candidate.message);
+            if (message?.role === "user") {
+              const text = messageText(message);
+              const pending = record.activity.find(
+                (activity): activity is SteeringActivity =>
+                  activity.kind === "steering" &&
+                  activity.status === "queued" &&
+                  activity.text === text,
+              );
+              if (pending) {
+                pending.status = "delivered";
+                pending.timestamp = now();
+              }
+            }
+          }
           if (candidate?.type === "compaction_start") {
             record.health = {
               ...record.health,
@@ -1796,24 +1892,14 @@ export class SubagentRuntime {
           }
           delivery.settled = true;
           record.updatedAt = now();
-          this.#recordActivity(record, {
-            kind: "steering",
-            status: "delivered",
-            text: truncateUtf8(delivery.message),
-            timestamp: now(),
-          });
           refreshHealth(record);
           delivery.resolve(projectSnapshot(record));
         } catch (error) {
           if (!delivery.settled) {
             delivery.settled = true;
-            this.#recordActivity(record, {
-              kind: "steering",
-              status: "failed",
-              text: truncateUtf8(delivery.message),
-              error: truncateUtf8(errorText(error)),
-              timestamp: now(),
-            });
+            delivery.activity.status = "failed";
+            delivery.activity.error = truncateUtf8(errorText(error));
+            delivery.activity.timestamp = now();
             delivery.reject(
               error instanceof Error ? error : new Error(errorText(error)),
             );
@@ -1861,13 +1947,9 @@ export class SubagentRuntime {
       return;
     }
     delivery.settled = true;
-    this.#recordActivity(record, {
-      kind: "steering",
-      status: "discarded",
-      text: truncateUtf8(delivery.message),
-      error: record.status,
-      timestamp: now(),
-    });
+    delivery.activity.status = "discarded";
+    delivery.activity.error = record.status;
+    delivery.activity.timestamp = now();
     delivery.reject(
       new Error(`Cannot steer subagent ${record.id}; it is ${record.status}`),
     );
@@ -1975,6 +2057,13 @@ export class SubagentRuntime {
     record.unsubscribeSession?.();
     record.unsubscribeSession = undefined;
     record.finalization = (async () => {
+      for (const activity of record.activity) {
+        if (activity.kind === "steering" && activity.status === "queued") {
+          activity.status = "discarded";
+          activity.error = record.status;
+          activity.timestamp = now();
+        }
+      }
       try {
         await activeSession?.abort();
       } catch {
@@ -2023,6 +2112,7 @@ export class SubagentRuntime {
       const waiters = this.#waiters.get(record.id) ?? [];
       this.#waiters.delete(record.id);
       for (const waiter of waiters) {
+        waiter.signal?.removeEventListener("abort", waiter.onAbort!);
         waiter.resolve(finalSnapshot);
       }
       return finalSnapshot;

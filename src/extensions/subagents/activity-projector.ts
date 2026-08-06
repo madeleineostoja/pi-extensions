@@ -93,14 +93,13 @@ export class SubagentActivityProjector {
       !notify ||
       snapshot.status !== "failed" ||
       snapshot.owner !== "public-tool" ||
-      snapshot.launchMode !== "background" ||
       this.#notifiedFailures.has(snapshot.id)
     ) {
       return;
     }
     this.#notifiedFailures.add(snapshot.id);
     notify(
-      `Background subagent ${snapshot.id} failed: ${bounded(snapshot.error ?? "failed.", 180)}`,
+      `Managed subagent ${snapshot.id} failed: ${bounded(snapshot.error ?? "failed.", 180)}`,
       "warning",
     );
   }

@@ -107,7 +107,8 @@ function fixture(
   confirm: () => Promise<boolean> = async () => false,
 ) {
   const theme = {
-    fg: (_color: string, text: string) => text,
+    fg: (color: string, text: string) =>
+      color === "muted" ? `\x1b[2m${text}\x1b[22m` : text,
     bg: (_color: string, text: string) => text,
     bold: (text: string) => text,
     italic: (text: string) => text,
@@ -208,6 +209,40 @@ describe("AgentsSurface roster and landing", () => {
     expect(notify).toHaveBeenCalledOnce();
   });
 
+  it("rebuilds unchanged landing actions after returning to the roster", () => {
+    const runtime = new FakeRuntime("runtime", [snapshot()]);
+    const { surface } = fixture([runtime]);
+
+    surface.handleInput(enter);
+    expect(plain(rendered(surface))).toContain("View activity");
+    surface.handleInput(escape);
+    surface.handleInput(enter);
+    const reopened = plain(rendered(surface));
+
+    expect(reopened).toContain("View activity");
+    expect(reopened).toContain("Stop agent");
+    expect(reopened).toContain("Back");
+    surface.handleInput(enter);
+    expect(plain(rendered(surface))).toContain("Agent activity · Explore");
+  });
+
+  it("stops a selected running agent only after confirmation", async () => {
+    const runtime = new FakeRuntime("runtime", [snapshot()]);
+    const confirm = vi.fn(async () => true);
+    const { surface } = fixture([runtime], confirm);
+
+    surface.handleInput(enter);
+    surface.handleInput(down);
+    surface.handleInput(enter);
+    await Promise.resolve();
+
+    expect(confirm).toHaveBeenCalledWith(
+      "Stop agent",
+      "Stop this running agent?",
+    );
+    expect(runtime.stop).toHaveBeenCalledWith("agent-1");
+  });
+
   it("uses only approved landing facts and actions", () => {
     const current = snapshot({
       health: {
@@ -227,7 +262,7 @@ describe("AgentsSurface roster and landing", () => {
     expect(text).toContain("Stop agent");
     expect(text).toContain("Back");
     expect(text).not.toMatch(/Details|Summaris|Model:|Tab:/);
-    expect(text).not.toContain("Earlier activity is retained");
+    expect(text).not.toContain("Earlier activity");
   });
 });
 
@@ -308,9 +343,9 @@ describe("AgentsSurface activity and result", () => {
     expect(plain(rendered(surface))).toContain("complete complete");
   });
 
-  it("scrolls Activity while keeping ordinary q input in guidance and Escape returns", () => {
+  it("opens Activity at the latest records and preserves manual scrolling", () => {
     const current = snapshot();
-    const records: RuntimeInspection["records"] = Array.from(
+    let records: RuntimeInspection["records"] = Array.from(
       { length: 30 },
       (_, index) => ({
         kind: "message" as const,
@@ -324,16 +359,55 @@ describe("AgentsSurface activity and result", () => {
     const { surface } = fixture([runtime]);
     surface.handleInput(enter);
     surface.handleInput(enter);
-    const beforeScroll = plain(rendered(surface));
 
-    surface.handleInput(down);
-    expect(plain(rendered(surface))).not.toBe(beforeScroll);
+    expect(plain(rendered(surface))).toContain("activity 29");
+    surface.handleInput("\x1b[A");
+    const scrolled = plain(rendered(surface));
+    records = [
+      ...records,
+      { kind: "message", role: "assistant", text: "newest activity" },
+    ];
+    runtime.emit();
+    expect(plain(rendered(surface))).toBe(scrolled);
+
     surface.handleInput("q");
     expect(plain(rendered(surface))).toContain("Agent activity · Explore");
     expect(plain(rendered(surface))).toContain("q");
-
     surface.handleInput(escape);
     expect(plain(rendered(surface))).toContain("Agent · Explore");
+  });
+
+  it("renders pending steering muted and delivered steering normally once", () => {
+    const current = snapshot();
+    let records: RuntimeInspection["records"] = [
+      {
+        kind: "steering",
+        status: "queued",
+        text: "wrap it up",
+        timestamp: "2024-01-01T00:00:02.000Z",
+      },
+    ];
+    const runtime = new FakeRuntime("runtime", [current], (value) =>
+      inspectionFor(value, { records }),
+    );
+    const { surface } = fixture([runtime]);
+    surface.handleInput(enter);
+    surface.handleInput(enter);
+
+    expect(rendered(surface)).toContain("\x1b[2m> wrap it up\x1b[22m");
+    records = [
+      {
+        kind: "steering",
+        status: "delivered",
+        text: "wrap it up",
+        timestamp: "2024-01-01T00:00:02.000Z",
+      },
+    ];
+    runtime.emit();
+    const delivered = rendered(surface);
+    expect(delivered).toContain("> wrap it up");
+    expect(delivered).not.toContain("\x1b[2m> wrap it up\x1b[22m");
+    expect(plain(delivered).match(/> wrap it up/g)).toHaveLength(1);
   });
 
   it("keeps multiline tool summaries on one safe row", () => {

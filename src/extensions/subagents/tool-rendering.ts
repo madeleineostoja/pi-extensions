@@ -8,7 +8,7 @@ import type { RuntimeHealth, RuntimeSnapshot } from "./runtime.js";
 import { costLabel, elapsedLabel, tokenLabel } from "./formatters.js";
 import type { PublicAgentParams } from "./public-tools.js";
 
-type AgentPresentation = "foreground" | "background" | "status" | "steer";
+type AgentPresentation = "start" | "status" | "steer";
 type AgentToolDetails = Pick<
   RuntimeSnapshot,
   "id" | "status" | "type" | "description" | "timestamps"
@@ -70,8 +70,8 @@ export const renderAgentResult = toolResultRenderer({
       const submitted = submittedDescription(context.args);
       return submitted ? `Starting ${submitted}…` : "Starting subagent…";
     }
-    if (presentation === "background") {
-      return backgroundSummary(details);
+    if (presentation === "start") {
+      return startSummary(details);
     }
     if (presentation === "steer") {
       return `Queueing guidance for ${details.id}…`;
@@ -97,16 +97,14 @@ export const renderAgentResult = toolResultRenderer({
   },
   content: "markdown",
   expandedContent(result) {
-    return agentDetails(result)?.presentation === "background"
-      ? []
-      : result.content;
+    return agentDetails(result)?.presentation === "start" ? [] : result.content;
   },
 });
 
 function completedSummary(details: AgentToolDetails): string | string[] {
   if (details.status !== "completed") {
-    if (details.presentation === "background") {
-      return backgroundSummary(details);
+    if (details.presentation === "start") {
+      return startSummary(details);
     }
     if (details.presentation === "steer") {
       return `Guidance queued for subagent ${details.id}.`;
@@ -114,19 +112,17 @@ function completedSummary(details: AgentToolDetails): string | string[] {
     return `Subagent ${details.id} is ${details.status}.`;
   }
   const sentence =
-    details.presentation === "foreground"
-      ? `Completed ${description(details)}.`
-      : details.presentation === "background"
-        ? `Background subagent ${details.id} completed.`
-        : details.presentation === "steer"
-          ? `Guidance was queued for subagent ${details.id}.`
-          : `Retrieved result for ${description(details)}.`;
+    details.presentation === "start"
+      ? `Managed subagent ${details.id} completed.`
+      : details.presentation === "steer"
+        ? `Guidance was queued for subagent ${details.id}.`
+        : `Retrieved result for ${description(details)}.`;
   const metrics = realMetrics(details);
   return metrics ? [sentence, metrics] : sentence;
 }
 
-function backgroundSummary(details: AgentToolDetails): string {
-  return `${details.id} · ${details.status} in background`;
+function startSummary(details: AgentToolDetails): string {
+  return `${details.id} · ${details.status}`;
 }
 
 function realMetrics(
@@ -248,7 +244,7 @@ function submittedDescription(args: unknown): string | undefined {
 
 function presentationFor(args: unknown): AgentPresentation {
   if (typeof args !== "object" || args === null) {
-    return "foreground";
+    return "start";
   }
   const value = args as { wait?: unknown; message?: unknown };
   if (typeof value.message === "string") {
@@ -257,7 +253,7 @@ function presentationFor(args: unknown): AgentPresentation {
   if ("wait" in value) {
     return "status";
   }
-  return "foreground";
+  return "start";
 }
 
 function retainedId(args: unknown): string | undefined {
@@ -299,10 +295,10 @@ function resultContent(
   presentation: AgentPresentation,
 ): string {
   if (snapshot.status === "completed") {
-    if (presentation === "background") {
+    if (presentation === "start") {
       return [
-        `Subagent ${snapshot.id} (${snapshot.type}) completed after starting in background.`,
-        `Use get_subagent_result with id "${snapshot.id}" and wait:true when its result becomes a dependency.`,
+        `Started managed subagent ${snapshot.id} (${snapshot.type}).`,
+        `Call get_subagent_result with id "${snapshot.id}" and wait:true when its result becomes a dependency.`,
       ].join("\n");
     }
     if (presentation === "steer") {
@@ -314,10 +310,10 @@ function resultContent(
     const reason = snapshot.error ?? `${snapshot.status}.`;
     return `Subagent ${snapshot.id} (${snapshot.type}) ${snapshot.status}: ${reason}`;
   }
-  if (presentation === "background") {
+  if (presentation === "start") {
     return [
-      `Started subagent ${snapshot.id} (${snapshot.type}) in the background.`,
-      "Continue the independent work that justified background mode.",
+      `Started managed subagent ${snapshot.id} (${snapshot.type}).`,
+      "Continue useful independent work when available.",
       `When its result becomes a dependency, use get_subagent_result with id "${snapshot.id}" and wait:true. Do not poll.`,
     ].join("\n");
   }

@@ -56,8 +56,22 @@ export function registerDocs(pi: ExtensionAPI, agentDir: () => string): void {
       return executeDocs(input, signal, { agentDir: agentDir() });
     },
     renderResult: toolResultRenderer({
-      summary() {
-        return undefined;
+      summary(result) {
+        const details = result.details as
+          | {
+              resolution?: { selectedId?: unknown };
+              version?: { state?: unknown; pin?: unknown };
+            }
+          | undefined;
+        const id = details?.resolution?.selectedId;
+        const version = details?.version;
+        const state =
+          version?.state === "exact-version" && typeof version.pin === "string"
+            ? `provider ${version.pin}`
+            : version?.state === "provider-current"
+              ? "provider current"
+              : "provider resolved";
+        return `Documentation resolved · ${typeof id === "string" ? id : "library"} · ${state}`;
       },
       partial() {
         return "Retrieving documentation…";

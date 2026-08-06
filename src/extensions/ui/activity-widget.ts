@@ -75,23 +75,53 @@ export function installActivityWidget(
     return () => {};
   }
   const components = new Set<ActivityWidget>();
-  ctx.ui.setWidget(
-    WIDGET_KEY,
-    (tui, theme) => {
-      const widget = new ActivityWidget(store, tui, theme, () =>
-        components.delete(widget),
-      );
-      components.add(widget);
-      return widget;
-    },
-    { placement: "aboveEditor" },
-  );
-  return () => {
-    for (const component of components) {
-      component.dispose();
+  let registered = false;
+  let disposed = false;
+  const disposeComponents = () => {
+    while (components.size > 0) {
+      components.values().next().value?.dispose();
     }
     components.clear();
-    ctx.ui.setWidget(WIDGET_KEY, undefined);
+  };
+  const reconcile = () => {
+    if (disposed) {
+      return;
+    }
+    const shouldRegister = store.records.length > 0;
+    if (shouldRegister === registered) {
+      return;
+    }
+    registered = shouldRegister;
+    if (!shouldRegister) {
+      disposeComponents();
+      ctx.ui.setWidget(WIDGET_KEY, undefined);
+      return;
+    }
+    ctx.ui.setWidget(
+      WIDGET_KEY,
+      (tui, theme) => {
+        const widget = new ActivityWidget(store, tui, theme, () =>
+          components.delete(widget),
+        );
+        components.add(widget);
+        return widget;
+      },
+      { placement: "aboveEditor" },
+    );
+  };
+  const unsubscribe = store.subscribe(reconcile);
+  reconcile();
+  return () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    unsubscribe();
+    disposeComponents();
+    if (registered) {
+      registered = false;
+      ctx.ui.setWidget(WIDGET_KEY, undefined);
+    }
   };
 }
 

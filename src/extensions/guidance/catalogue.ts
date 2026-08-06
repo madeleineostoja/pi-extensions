@@ -43,14 +43,17 @@ export const PUBLIC_TOOL_CATALOGUE: readonly GuidanceTool[] = [
     name: "stop_process",
     summary: "Stop managed work that is no longer needed.",
   },
-  { name: "Agent", summary: "Run an Explore or Review subagent." },
+  {
+    name: "Agent",
+    summary: "Start an Explore or Review managed subagent and return its ID.",
+  },
   {
     name: "get_subagent_result",
-    summary: "Join a background subagent or inspect bounded partial progress.",
+    summary: "Join a managed subagent or inspect bounded partial progress.",
   },
   {
     name: "steer_subagent",
-    summary: "Queue guidance for a running background subagent.",
+    summary: "Queue guidance for a running managed subagent.",
   },
   {
     name: "inspect_implement_run",
@@ -116,7 +119,7 @@ export const CROSS_TOOL_RULES: readonly GuidanceRule[] = [
   },
   {
     requiredTools: ["Agent", "get_subagent_result"],
-    text: "Use background only while independent work continues; otherwise use foreground rather than immediately starting and joining. Inspect partial progress intentionally rather than polling.",
+    text: "Start independent Explore or Review work with Agent. Continue useful independent work when available, then join once with get_subagent_result when the result becomes a dependency. An immediate wait:true join is appropriate when nothing else can proceed; do not poll.",
   },
   {
     requiredTools: ["lsp", "Agent"],

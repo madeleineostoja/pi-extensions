@@ -110,9 +110,9 @@ These tools are called by the agent rather than typed as slash commands.
 | `start_process`         | Start managed foreground work while independent work continues                         |
 | `get_process_result`    | Join or intentionally inspect a managed process                                        |
 | `stop_process`          | Stop managed work that is no longer needed                                             |
-| `Agent`                 | Run an Explore or Review subagent                                                      |
-| `get_subagent_result`   | Join or inspect a background subagent                                                  |
-| `steer_subagent`        | Queue guidance for a running background subagent                                       |
+| `Agent`                 | Start an Explore or Review managed subagent and return its ID                          |
+| `get_subagent_result`   | Join or inspect a managed subagent                                                     |
+| `steer_subagent`        | Queue guidance for a running managed subagent                                          |
 | `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                              |
 | `docs`                  | Retrieve bounded library documentation                                                 |
 | `package_search`        | Search documentation, npm, and public GitHub package ecosystems                        |

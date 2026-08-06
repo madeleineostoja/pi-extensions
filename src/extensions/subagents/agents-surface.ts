@@ -402,7 +402,10 @@ export class AgentsSurface implements Component, Focusable {
       values.push("stop");
     }
     values.push("back");
-    if (values.join("|") === this.#actionValues.join("|")) {
+    if (
+      this.#actions !== undefined &&
+      values.join("|") === this.#actionValues.join("|")
+    ) {
       return;
     }
     const selected = this.#actions?.getSelectedItem()?.value as
@@ -452,6 +455,7 @@ export class AgentsSurface implements Component, Focusable {
       this.#activityScroll = new ScrollViewport({
         content: new TimelineComponent(inspection, this.theme),
         viewportHeight: 20,
+        followBottom: true,
       });
     }
     if (eligibleGuidance(entry) && !this.#guidance) {
@@ -518,6 +522,7 @@ export class AgentsSurface implements Component, Focusable {
       this.#activityScroll = new ScrollViewport({
         content: new TimelineComponent(inspection!, this.theme),
         viewportHeight: 20,
+        followBottom: true,
       });
       this.#guidance = eligibleGuidance(entry)
         ? this.#makeGuidance(entry)
@@ -693,11 +698,14 @@ class TimelineComponent implements Component {
       if (record.kind === "tool") {
         lines.push(...toolLines(record, this.theme, width));
       } else if (record.kind === "steering") {
+        const steering = truncateToWidth(
+          `> ${bounded(record.text, 300)}`,
+          width,
+        );
         lines.push(
-          this.theme.fg(
-            "muted",
-            truncateToWidth(`> ${bounded(record.text, 300)}`, width),
-          ),
+          record.status === "queued"
+            ? this.theme.fg("muted", steering)
+            : steering,
         );
       } else if (record.kind === "retry") {
         lines.push(
@@ -720,18 +728,6 @@ class TimelineComponent implements Component {
           ),
         );
       }
-    }
-    if (
-      this.inspection.omittedMessages ||
-      this.inspection.omittedActivity ||
-      this.inspection.compactedHistory
-    ) {
-      lines.push(
-        this.theme.fg(
-          "muted",
-          `Earlier activity omitted: ${this.inspection.omittedMessages + this.inspection.omittedActivity}${this.inspection.compactedHistory ? " · compacted history" : ""}`,
-        ),
-      );
     }
     return lines.length > 0
       ? lines

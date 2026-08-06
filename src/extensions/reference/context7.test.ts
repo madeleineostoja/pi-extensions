@@ -102,6 +102,25 @@ describe("Context7 fixed transport", () => {
     client.dispose();
   });
 
+  it("settles a stalled request at the overall deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createContext7Transport({
+        deadlineMs: 15,
+        fetch: vi.fn(() => new Promise<Response>(() => {})) as typeof fetch,
+      });
+      const pending = client.search("widget", "question");
+      const timedOut = expect(pending).rejects.toMatchObject({
+        kind: "timeout",
+      });
+      await vi.advanceTimersByTimeAsync(15);
+      await timedOut;
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("parses documented code and information snippets without losing multiline material", async () => {
     const fetcher = vi.fn(async () =>
       response(

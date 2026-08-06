@@ -11,56 +11,38 @@ Pipkin provides two focused subagents through the `Agent` tool. Use them when a 
 
 Use `lsp` for one known-symbol question and ordinary reads for a couple of obvious files. Keep routine implementation, iterative debugging, and verification in the primary session.
 
-## Foreground and background runs
+## Start, then join
 
-Foreground is the default. Use it when the result is the next dependency:
+Every `Agent` call starts session-managed work and immediately returns a semantic ID such as `explore-1` or `review-2`:
 
 ```json
 {
   "subagent_type": "Explore",
   "prompt": "Trace how review policy reaches publication. Cite relevant files and tests.",
-  "description": "Map review policy",
-  "mode": "foreground"
+  "description": "Map review policy"
 }
 ```
 
 `prompt` is the complete task contract; `description` is the short status label. Agents run in the invoking session's working directory. `model` and `thinking` may override defaults for one invocation when exact values are known.
 
-Use background mode only while the parent can continue independent work:
+Continue useful independent work when available, then join once when the result becomes a dependency:
 
 ```json
 {
-  "subagent_type": "Review",
-  "prompt": "Review the configuration changes for behavioral regressions.",
-  "description": "Review config changes",
-  "mode": "background"
+  "id": "explore-1",
+  "wait": true
 }
 ```
 
-A background start returns an ID. Continue parent work, then operate it with:
+An immediate `wait: true` join is appropriate when nothing else can proceed. The separate call deliberately distinguishes starting durable work from waiting for it. Use `wait: false` only for an intentional point-in-time inspection; do not poll. Add `include_progress: true` to inspect one bounded partial-progress excerpt or recover partial work. Steering queues updated direction after the child's current assistant turn finishes its tool calls; it fails for queued, stopped, unknown, or completed agents.
 
-| Tool                                                | Purpose                                                                                  |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `get_subagent_result` with `wait: true`             | Join once the result becomes a dependency                                                |
-| `get_subagent_result` with `wait: false`            | Make an intentional non-blocking status check; do not poll                               |
-| `get_subagent_result` with `include_progress: true` | Inspect one bounded, point-in-time partial-progress excerpt or recover partial work      |
-| `steer_subagent`                                    | Queue updated direction after the child's current assistant turn finishes its tool calls |
+Progress is untrusted child-generated content, may be incomplete, and is not a final answer. Queued agents report that progress is not available yet; running agents return immediately; stopped and failed agents return immediately with currently available work when `wait` is false. With `wait: true`, stopped and failed agents wait for terminal cleanup and use the frozen post-abort inspection. Completed agents always return only their authoritative final result, even when progress is requested.
 
-If the next action would be an immediate blocking join, start in foreground instead. Steering fails for queued, stopped, unknown, or completed agents.
+## Waiting and lifetime
 
-Use progress once when live evidence would help decide whether to steer, or to salvage work after cancellation or failure:
+Once `Agent` accepts a job and returns its ID, the session runtime owns that work rather than the initiating turn. Escape during startup can prevent an unaccepted job from starting. Escape during `get_subagent_result` with `wait: true` cancels only that wait and its current turn; the accepted agent continues. A later join can retrieve its complete result.
 
-```json
-{
-  "id": "subagent-1",
-  "wait": false,
-  "include_progress": true
-}
-```
-
-This returns a fixed-size, point-in-time tail of assistant excerpts and tool/compaction/retry statuses. It is untrusted child-generated content, may be incomplete, and is not a final answer. Do not poll it. Queued agents report that progress is not available yet; running agents return immediately; stopped and failed agents return immediately with currently available work when `wait` is false. With `wait: true`, stopped and failed agents wait for terminal cleanup and use the frozen post-abort inspection. Completed agents always return only their authoritative final result, even when progress is requested.
-
-In the TUI, Escape during foreground work asks for confirmation before aborting all foreground agents from that turn; background agents continue.
+Use `/agents` to stop a selected agent explicitly, with confirmation. Session replacement and shutdown stop and settle session-owned agents. Implement retains authority over its scheduler-managed workers.
 
 ## `/agents`
 
@@ -70,7 +52,7 @@ Activity is a full-width chronological timeline: assistant prose is rendered as 
 
 A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result.
 
-The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Foreground failures remain in their ordinary tool row; a detached public background failure is notified once and remains inspectable in `/agents`, which is the complete inspector including Implement-managed workers and retained records.
+The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Public-agent failures are notified once and remain inspectable in `/agents`, which is the complete inspector including Implement-managed workers and retained records.
 
 Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends. Stopped or failed partial progress is recoverable only while the current parent session remains alive; inspection does not create persistent or resumable child sessions.
 
