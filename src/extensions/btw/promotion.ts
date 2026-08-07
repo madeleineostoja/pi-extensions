@@ -60,9 +60,7 @@ export const renderBtwMessage: MessageRenderer<BtwMessageDetails> = (
     return undefined;
   }
   view.addChild(new Text(theme.bold("Question"), 0, 0));
-  view.addChild(
-    new Text(theme.fg("toolOutput", exchange.question), 0, 0),
-  );
+  view.addChild(new Text(theme.fg("toolOutput", exchange.question), 0, 0));
   view.addChild(new Text(theme.bold("Answer"), 0, 0));
   view.addChild(new Markdown(exchange.answer, 0, 0, getMarkdownTheme()));
   return view;

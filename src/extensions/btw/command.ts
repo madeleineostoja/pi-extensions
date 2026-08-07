@@ -96,26 +96,16 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
 
         const run = async () => {
           try {
-            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-            if (!isCurrent()) {
-              return;
-            }
-            if (!auth.ok || !auth.apiKey) {
-              panel?.setState({
-                status: "error",
-                errorText: auth.ok
-                  ? `No API key for ${model.provider}`
-                  : `Auth error: ${auth.error}`,
-              });
-              return;
-            }
             const prompt = buildPrompt(ctx.sessionManager, question, model);
-            const result = await completeText(model, prompt.context, {
-              apiKey: auth.apiKey,
-              headers: auth.headers,
-              maxTokens: prompt.maxTokens,
-              signal: abortController.signal,
-            });
+            const result = await completeText(
+              model,
+              prompt.context,
+              {
+                maxTokens: prompt.maxTokens,
+                signal: abortController.signal,
+              },
+              ctx.modelRegistry,
+            );
             if (!isCurrent()) {
               return;
             }

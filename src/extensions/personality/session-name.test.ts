@@ -20,11 +20,7 @@ function context(): ExtensionContext {
   return {
     modelRegistry: {
       find: vi.fn(() => ({ provider: "test", id: "utility" })),
-      getApiKeyAndHeaders: vi.fn(async () => ({
-        ok: true,
-        apiKey: "test-key",
-        headers: {},
-      })),
+      complete: vi.fn(),
     },
   } as unknown as ExtensionContext;
 }
@@ -41,8 +37,9 @@ describe("session-name capability", () => {
       stopReason: "stop",
     });
 
+    const ctx = context();
     const result = await generateSessionName(
-      context(),
+      ctx,
       options,
       {
         kind: "implement",
@@ -63,6 +60,7 @@ describe("session-name capability", () => {
     expect(request.messages[0]!.content[0]!.text).toContain(
       "# Managed processes",
     );
+    expect(completeTextMock.mock.calls[0]?.[3]).toBe(ctx.modelRegistry);
   });
 
   it("preserves a complete Implement title beyond 40 characters", async () => {

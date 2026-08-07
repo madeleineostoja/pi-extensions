@@ -97,17 +97,6 @@ export async function generateSessionName(
       );
     }
 
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
-      return withImplementFallback(
-        input,
-        fallback,
-        auth.ok
-          ? `No API key for ${model.provider}`
-          : `Auth error: ${auth.error}`,
-      );
-    }
-
     const context =
       input.context ??
       (ctx.cwd && ctx.sessionManager
@@ -125,13 +114,8 @@ export async function generateSessionName(
     const result = await completeText(
       model,
       { systemPrompt, messages: [userMessage] },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        maxTokens: 1024,
-        reasoning: utility.thinking as never,
-        signal,
-      },
+      { maxTokens: 1024, signal },
+      ctx.modelRegistry,
     );
 
     if (!result.ok) {

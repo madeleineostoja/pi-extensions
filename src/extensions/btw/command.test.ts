@@ -14,7 +14,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { completeText } from "#lib/complete";
+import { completeText, type CompleteTextResult } from "#lib/complete";
 import { registerBtwCommand } from "./command.js";
 
 const completeTextMock = vi.mocked(completeText);
@@ -79,7 +79,7 @@ function fixture() {
 
 function context(
   custom: ReturnType<typeof customFixture>,
-  auth?: Promise<unknown>,
+  completion?: Promise<unknown>,
 ) {
   const notify = vi.fn();
   return {
@@ -94,9 +94,14 @@ function context(
       },
       ui: { custom: custom.custom, notify },
       modelRegistry: {
-        getApiKeyAndHeaders: vi.fn(
+        complete: vi.fn(
           () =>
-            auth ?? Promise.resolve({ ok: true, apiKey: "key", headers: {} }),
+            completion ??
+            Promise.resolve({
+              role: "assistant",
+              content: [{ type: "text", text: "answer" }],
+              stopReason: "stop",
+            }),
         ),
       },
       sessionManager: {
@@ -146,13 +151,15 @@ describe("/btw", () => {
     );
   });
 
-  it("shows authentication failures in the panel", async () => {
+  it("shows registry completion failures in the panel", async () => {
     const { command } = fixture();
     const custom = customFixture();
-    const { value } = context(
-      custom,
-      Promise.resolve({ ok: false, error: "credentials unavailable" }),
-    );
+    const { value } = context(custom);
+    completeTextMock.mockResolvedValue({
+      ok: false,
+      reason: "error",
+      message: "credentials unavailable",
+    });
 
     const running = command("question", value);
     await flush();
@@ -164,31 +171,38 @@ describe("/btw", () => {
     ).toBe(true);
     custom.close();
     await running;
-    expect(completeTextMock).not.toHaveBeenCalled();
+    expect(completeTextMock).toHaveBeenCalledOnce();
   });
 
-  it("shows the panel before deferred authentication and completion", async () => {
+  it("shows the panel before deferred registry completion", async () => {
     const { command } = fixture();
     const custom = customFixture();
-    let resolveAuth: (value: unknown) => void = () => {};
-    const auth = new Promise((resolve) => {
-      resolveAuth = resolve;
-    });
-    const { value } = context(custom, auth);
+    let resolveCompletion: (value: CompleteTextResult) => void = () => {};
+    completeTextMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCompletion = resolve;
+      }),
+    );
+    const { value } = context(custom);
 
     const running = command("question", value);
     expect(
       custom.component?.render(80).some((line) => line.includes("Thinking")),
     ).toBe(true);
-    expect(value.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
 
     await flush();
-    resolveAuth({ ok: true, apiKey: "key", headers: {} });
-    completeTextMock.mockResolvedValue({
+    expect(completeTextMock).toHaveBeenCalledWith(
+      value.model,
+      expect.anything(),
+      expect.objectContaining({ maxTokens: 1_024 }),
+      value.modelRegistry,
+    );
+    resolveCompletion({
       ok: true,
       text: "answer",
       stopReason: "stop",
-    } as never);
+    });
     await flush();
     custom.close();
     await running;
@@ -197,6 +211,7 @@ describe("/btw", () => {
       value.model,
       expect.anything(),
       expect.objectContaining({ maxTokens: 1_024 }),
+      value.modelRegistry,
     );
   });
 

@@ -48,8 +48,16 @@ describe("BTW promotion", () => {
     });
     const transcript = { ...message, role: "custom" as const, timestamp: 0 };
     const theme = toolTheme();
-    const collapsed = renderBtwMessage(transcript, { expanded: false }, theme);
-    const expanded = renderBtwMessage(transcript, { expanded: true }, theme);
+    const collapsed = renderBtwMessage(
+      transcript,
+      { expanded: false, outputPad: 1 },
+      theme,
+    );
+    const expanded = renderBtwMessage(
+      transcript,
+      { expanded: true, outputPad: 1 },
+      theme,
+    );
 
     expect(collapsed?.render(80).join("\n")).toContain("What is FastAPI?");
     expect(theme.backgrounds).toContain("toolSuccessBg");
@@ -73,7 +81,11 @@ describe("BTW promotion", () => {
     });
     const transcript = { ...message, role: "custom" as const, timestamp: 0 };
     const lines = (
-      renderBtwMessage(transcript, { expanded: true }, toolTheme())?.render(80) ?? []
+      renderBtwMessage(
+        transcript,
+        { expanded: true, outputPad: 1 },
+        toolTheme(),
+      )?.render(80) ?? []
     )
       .map((line) => line.trim())
       .join("\n");

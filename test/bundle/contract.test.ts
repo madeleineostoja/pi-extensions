@@ -338,6 +338,7 @@ async function createBundleRunner(
     },
     {
       getModel: () => undefined,
+      getScopedModels: () => [],
       isIdle: () => true,
       isProjectTrusted: () => true,
       getSignal: () => undefined,

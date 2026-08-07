@@ -12,6 +12,7 @@ import { ActivityStore, type StoredActivityRecord } from "./activity-store.js";
 
 const WIDGET_KEY = "pipkin.ui.activity";
 const ACTIVITY_BODY_LINE_LIMIT = 8;
+const FULLSCREEN_ACTIVITY_BODY_LINE_LIMIT = 3;
 
 class ActivityWidget implements Component {
   #disposed = false;
@@ -49,21 +50,38 @@ class ActivityWidget implements Component {
       return [];
     }
     if (width < 3) {
-      return renderActivity(records, Math.max(1, width), this.theme).map(
-        (line) =>
-          activityBackground(
-            truncateToWidth(line, Math.max(1, width), "", true),
-            this.theme,
-          ),
+      return renderActivity(
+        records,
+        Math.max(1, width),
+        this.theme,
+        Date.now(),
+        this.lineLimit,
+      ).map((line) =>
+        activityBackground(
+          truncateToWidth(line, Math.max(1, width), "", true),
+          this.theme,
+        ),
       );
     }
     const box = new Box(1, 1, (text) => activityBackground(text, this.theme));
     box.addChild({
       render: (contentWidth) =>
-        renderActivity(records, Math.max(1, contentWidth), this.theme),
+        renderActivity(
+          records,
+          Math.max(1, contentWidth),
+          this.theme,
+          Date.now(),
+          this.lineLimit,
+        ),
       invalidate() {},
     });
     return box.render(width);
+  }
+
+  get lineLimit(): number {
+    return this.tui.mode === "fullscreen"
+      ? FULLSCREEN_ACTIVITY_BODY_LINE_LIMIT
+      : ACTIVITY_BODY_LINE_LIMIT;
   }
 }
 
@@ -143,6 +161,7 @@ export function renderActivity(
   width: number,
   theme: Theme,
   now = Date.now(),
+  lineLimit = ACTIVITY_BODY_LINE_LIMIT,
 ): string[] {
   const contentWidth = Math.max(1, width);
   const lines: string[] = [];
@@ -154,7 +173,7 @@ export function renderActivity(
     0,
     ...records.map((record) => visibleWidth(rightFields(record, now))),
   );
-  let remaining = ACTIVITY_BODY_LINE_LIMIT;
+  let remaining = lineLimit;
   let renderedRecords = 0;
   for (const record of records) {
     if (remaining === 0) {

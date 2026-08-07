@@ -246,10 +246,15 @@ describe("automatic session naming", () => {
     });
   });
 
-  it("uses minimal reasoning for title generation", async () => {
+  it("uses a bounded title-generation request", async () => {
     const { handlers } = makeFakePi();
     const { ctx } = makeExtensionCtx({
-      model: { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
+      model: {
+        provider: "deepseek",
+        id: "deepseek-v4-flash",
+        api: "openai-completions",
+        reasoning: true,
+      },
     });
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
     completeTextMock.mockResolvedValue({
@@ -264,7 +269,6 @@ describe("automatic session naming", () => {
     expect(completeTextMock).toHaveBeenCalledTimes(1);
     expect(completeTextMock.mock.calls[0][2]).toMatchObject({
       maxTokens: 1024,
-      reasoning: "minimal",
     });
   });
 

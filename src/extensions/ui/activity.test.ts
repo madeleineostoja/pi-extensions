@@ -337,6 +337,52 @@ describe("Activity", () => {
     dispose();
   });
 
+  it("uses a smaller activity body after switching to fullscreen", () => {
+    const store = new ActivityStore();
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
+    for (let index = 0; index < 8; index += 1) {
+      store.accept({
+        version: 1,
+        source: "x",
+        generation: "g",
+        operation: "upsert",
+        record: record(`work-${index}`),
+      });
+    }
+    let factory:
+      | ((tui: unknown, theme: unknown) => { render(width: number): string[] })
+      | undefined;
+    const dispose = installActivityWidget(
+      {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          setWidget: (_key: string, value: typeof factory) => (factory = value),
+        },
+      } as never,
+      store,
+    );
+    const tui = {
+      mode: "regular" as "regular" | "fullscreen",
+      requestRender() {},
+    };
+    const widget = factory!(tui, {
+      fg: (_tone: string, text: string) => text,
+      bold: (text: string) => text,
+      bg: (_tone: string, text: string) => text,
+    });
+
+    expect(widget.render(80)).toHaveLength(10);
+    tui.mode = "fullscreen";
+    expect(widget.render(80)).toHaveLength(6);
+    dispose();
+  });
+
   it("keeps hierarchy, details, overflow, and ANSI-safe width bounded", () => {
     const store = new ActivityStore();
     store.accept({

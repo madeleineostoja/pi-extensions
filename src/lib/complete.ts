@@ -1,20 +1,14 @@
-import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type {
   Api,
   AssistantMessage,
   Context,
   Model,
-  SimpleStreamOptions,
+  ModelsApiStreamOptions,
   StopReason,
 } from "@earendil-works/pi-ai";
 
-type CompleteSimple = (
-  model: Model<Api>,
-  context: Context,
-  options?: SimpleStreamOptions,
-) => Promise<AssistantMessage>;
-
-export type CompleteTextDeps = { completeSimple?: CompleteSimple };
+export type CompleteTextDeps = Pick<ModelRegistry, "complete">;
 
 export type CompleteTextResult =
   | { ok: true; text: string; stopReason: StopReason }
@@ -28,15 +22,11 @@ export type CompleteTextResult =
 export async function completeText(
   model: Model<Api>,
   context: Context,
-  options?: SimpleStreamOptions,
-  deps?: CompleteTextDeps,
+  options: ModelsApiStreamOptions<Api> | undefined,
+  deps: CompleteTextDeps,
 ): Promise<CompleteTextResult> {
   try {
-    const response = await (deps?.completeSimple ?? defaultCompleteSimple)(
-      model,
-      context,
-      options,
-    );
+    const response = await deps.complete(model, context, options);
     return completionResult(response);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

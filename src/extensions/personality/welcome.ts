@@ -176,18 +176,27 @@ export function registerWelcome(
 ): void {
   let current: ExtensionContext | undefined;
   let shown = false;
+  let retainedHeader = false;
+  let shownInFullscreen = false;
   let generation = 0;
   let contextAbortController: AbortController | undefined;
 
-  const clear = () => {
+  const clear = (retainFullscreen = false) => {
     generation++;
     contextAbortController?.abort();
     contextAbortController = undefined;
-    if (!shown) {
+    if (!shown && !retainedHeader) {
       return;
     }
+    const retain = retainFullscreen && shownInFullscreen;
     shown = false;
+    if (retain) {
+      retainedHeader = true;
+      return;
+    }
     current?.ui.setHeader(undefined);
+    retainedHeader = false;
+    shownInFullscreen = false;
     current = undefined;
   };
 
@@ -225,19 +234,21 @@ export function registerWelcome(
       );
       current = ctx;
       shown = true;
-      ctx.ui.setHeader(
-        (_tui, theme): WelcomeHeader => new WelcomeCard(identity, theme),
-      );
+      retainedHeader = false;
+      ctx.ui.setHeader((tui, theme): WelcomeHeader => {
+        shownInFullscreen = tui?.mode === "fullscreen";
+        return new WelcomeCard(identity, theme);
+      });
     },
   );
 
   pi.on("input", (event, _ctx) => {
     if (event.text.trim() || event.images?.length) {
-      clear();
+      clear(true);
     }
   });
-  pi.on("session_info_changed", clear);
-  pi.on("session_shutdown", clear);
+  pi.on("session_info_changed", () => clear());
+  pi.on("session_shutdown", () => clear());
 }
 
 function choose(seed: string, category: string, count: number): number {

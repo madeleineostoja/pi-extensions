@@ -2,11 +2,12 @@ import type {
   AgentToolResult,
   BashToolDetails,
 } from "@earendil-works/pi-coding-agent";
-import type {
-  SandboxBashHost,
-  SandboxBashRequest,
-  SandboxExecutionLease,
-  SandboxManagedRequest,
+import {
+  SANDBOX_BASH_LOOKUP_CHANNEL,
+  type SandboxBashHost,
+  type SandboxBashRequest,
+  type SandboxExecutionLease,
+  type SandboxManagedRequest,
 } from "./bash-capability.js";
 
 type SandboxBashExecutor = (
@@ -42,9 +43,20 @@ export function bindSandboxBashExecutor(
 ): { dispose: () => void } {
   const manager = getManager();
   const token = {};
-  manager.bindings.set(host, { token, execute, startManaged });
+  const binding = { token, execute, startManaged };
+  manager.bindings.set(host, binding);
+  const unsubscribe = host.on?.(SANDBOX_BASH_LOOKUP_CHANNEL, (value) => {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      typeof (value as { resolve?: unknown }).resolve === "function"
+    ) {
+      (value as { resolve: (value: Binding) => void }).resolve(binding);
+    }
+  });
   return {
     dispose() {
+      unsubscribe?.();
       if (manager.bindings.get(host)?.token === token) {
         manager.bindings.delete(host);
       }

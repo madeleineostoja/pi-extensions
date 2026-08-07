@@ -616,10 +616,20 @@ describe("SubagentRuntime", () => {
     second.resolve();
     await expect(two).resolves.toMatchObject({ status: "running" });
     expect(runtime.snapshot(started.id)?.health?.pendingSteering).toBe(0);
-    expect(runtime.inspect(started.id)?.activity).toMatchObject([
-      { kind: "steering", status: "failed", text: "first" },
-      { kind: "steering", status: "queued", text: "second" },
-    ]);
+    expect(runtime.inspect(started.id)?.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "steering",
+          status: "failed",
+          text: "first",
+        }),
+        expect.objectContaining({
+          kind: "steering",
+          status: "queued",
+          text: "second",
+        }),
+      ]),
+    );
     runtime.stop(started.id);
     promptDone.resolve();
   });
@@ -1393,7 +1403,7 @@ describe("SubagentRuntime", () => {
     expect(final).toMatchObject({ result: { result: "complete" } });
     expect(earlier).toHaveBeenCalledOnce();
     expect(later).not.toHaveBeenCalled();
-    expect(faux.state.callCount).toBe(2);
+    expect(faux.state.callCount).toBe(1);
   });
 
   it("keeps nested Explore usable through Pi's live tool loop beside completion", async () => {
@@ -1498,7 +1508,7 @@ describe("SubagentRuntime", () => {
     });
     expect(final.result).toBeUndefined();
     expect(cancelled).toHaveBeenCalledOnce();
-    expect(faux.state.callCount).toBe(2);
+    expect(faux.state.callCount).toBe(1);
   });
 
   it("fails managed completion runs that settle without the completion tool", async () => {

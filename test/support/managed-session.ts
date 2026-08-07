@@ -63,9 +63,7 @@ export async function createManagedSessionHarness(
       },
     ],
   });
-  await modelRuntime.setRuntimeApiKey(MANAGED_TEST_PROVIDER, "test-key", {
-    allowNetwork: false,
-  });
+  await modelRuntime.setRuntimeApiKey(MANAGED_TEST_PROVIDER, "test-key");
   const model = modelRuntime.getModel(
     MANAGED_TEST_PROVIDER,
     MANAGED_TEST_MODEL,

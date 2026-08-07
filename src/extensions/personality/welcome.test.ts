@@ -111,7 +111,7 @@ describe("Welcome", () => {
     const { handlers, ctx, setHeader } = fixture();
     await sessionStart(handlers, "startup", ctx);
     expect(setHeader).toHaveBeenCalledTimes(1);
-    const header = setHeader.mock.calls[0]?.[0](undefined, theme);
+    const header = setHeader.mock.calls[0]?.[0]({ mode: "regular" }, theme);
     expect(header.render(80)[0]).toContain("Pipkin");
 
     const input = handlers.get("input")?.[0];
@@ -130,5 +130,17 @@ describe("Welcome", () => {
     ]);
     await sessionStart(withHistory.handlers, "startup", withHistory.ctx);
     expect(withHistory.setHeader).not.toHaveBeenCalled();
+
+    const fullscreen = fixture();
+    await sessionStart(fullscreen.handlers, "startup", fullscreen.ctx);
+    fullscreen.setHeader.mock.calls[0]?.[0]({ mode: "fullscreen" }, theme);
+    fullscreen.handlers.get("input")?.[0]?.(
+      { text: "Start work" },
+      fullscreen.ctx,
+    );
+    expect(fullscreen.setHeader).toHaveBeenCalledOnce();
+
+    fullscreen.handlers.get("session_shutdown")?.[0]?.({}, fullscreen.ctx);
+    expect(fullscreen.setHeader).toHaveBeenLastCalledWith(undefined);
   });
 });
