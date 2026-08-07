@@ -65,6 +65,26 @@ describe("session-name capability", () => {
     );
   });
 
+  it("preserves a complete Implement title beyond 40 characters", async () => {
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "Implement Explicit MCP Evaluation Budgets and Routing",
+      stopReason: "stop",
+    });
+
+    const result = await generateSessionName(
+      context(),
+      options,
+      { kind: "implement", planExcerpt: "# Explicit MCP evaluation budgets" },
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({
+      outcome: "success",
+      title: "Implement Explicit MCP Evaluation Budgets and Routing",
+    });
+  });
+
   it("falls back when Implement generation cannot provide a prefixed title", async () => {
     completeTextMock.mockResolvedValue({
       ok: true,

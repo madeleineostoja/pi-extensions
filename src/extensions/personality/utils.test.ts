@@ -37,12 +37,10 @@ describe("sanitizeTitle", () => {
     expect(sanitizeTitle("Session title")).toBeNull();
   });
 
-  it("caps titles at 40 characters", () => {
-    expect(sanitizeTitle("a".repeat(40))).toBe("a".repeat(40));
+  it("preserves complete titles without imposing a storage-length limit", () => {
     expect(
-      sanitizeTitle("Implement a red black tree data structure in Rust"),
-    ).toBe("Implement a red black tree data");
-    expect(sanitizeTitle("a".repeat(60))).toBe("a".repeat(40));
+      sanitizeTitle("Implement Explicit MCP Evaluation Budgets and Routing"),
+    ).toBe("Implement Explicit MCP Evaluation Budgets and Routing");
   });
 });
 
@@ -51,8 +49,8 @@ describe("buildTitlePrompt", () => {
     const result = buildTitlePrompt("Implement a red-black tree in Rust");
 
     expect(result.userText).toContain("Implement a red-black tree in Rust");
-    expect(result.userText).toContain("3–6 words");
-    expect(result.userText).toContain("max 40 characters");
+    expect(result.userText).toContain("usually 3–6 words");
+    expect(result.userText).toContain("complete, natural phrase");
     expect(result.systemPrompt).toContain("No quotes");
   });
 

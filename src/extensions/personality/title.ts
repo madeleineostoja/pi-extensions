@@ -22,16 +22,6 @@ export function sanitizeTitle(raw: string): string | null {
     return null;
   }
 
-  if (s.length > 40) {
-    const cut = s.slice(0, 40);
-    const lastSpace = cut.lastIndexOf(" ");
-    s = (lastSpace >= 20 ? cut.slice(0, lastSpace) : cut).trimEnd();
-    s = s.replace(/[.!?,;:]+$/, "");
-    if (!s) {
-      return null;
-    }
-  }
-
   const boilerplate = /^session\s*(name|title)?\s*[:-]?\s*$/i;
   if (boilerplate.test(s)) {
     return null;
@@ -58,7 +48,7 @@ export function buildTitlePrompt(
     prompts.length === 1 ? "the first user prompt" : "early user prompts";
   const systemPrompt =
     "You name coding sessions. Reply with a concise title only. No quotes, no punctuation at the end.";
-  const userText = `Give this session a short descriptive title (3–6 words, max 40 characters) based on ${basis}. The current request is authoritative: repository context may disambiguate it, never replace its subject or make incidental Git state the title. Put the task-identifying semantic core first. Only add a short continuity suffix such as “— again” or “Continue …” when recent sessions genuinely support it; reserve room for that suffix.\n\nCurrent request:\n${promptText}${formatRepositoryContext(context)}`;
+  const userText = `Give this session a short descriptive title (usually 3–6 words) based on ${basis}. Return a complete, natural phrase; never end with a dangling conjunction or preposition. The current request is authoritative: repository context may disambiguate it, never replace its subject or make incidental Git state the title. Put the task-identifying semantic core first. Only add a short continuity suffix such as “— again” or “Continue …” when recent sessions genuinely support it.\n\nCurrent request:\n${promptText}${formatRepositoryContext(context)}`;
   return { systemPrompt, userText };
 }
 
@@ -69,7 +59,7 @@ export function buildImplementTitlePrompt(
   return {
     systemPrompt:
       "You name coding sessions. This is an active Pipkin Implement run. Reply with a concise title only, beginning with Implement. No quotes, no punctuation at the end.",
-    userText: `Give this active Implement run a short descriptive title (3–6 words, max 40 characters). The bounded root plan excerpt is authoritative: repository context may only disambiguate it. Begin with “Implement ” followed by the task-identifying core. Use a brief continuity suffix only with strong recent-session evidence; Git activity alone never justifies it. Reserve room for an optional suffix.\n\nRoot plan excerpt:\n${planExcerpt}${formatRepositoryContext(context)}`,
+    userText: `Give this active Implement run a short descriptive title (usually 3–6 words after “Implement”). Return a complete, natural phrase; never end with a dangling conjunction or preposition. The bounded root plan excerpt is authoritative: repository context may only disambiguate it. Begin with “Implement ” followed by the task-identifying core. Use a brief continuity suffix only with strong recent-session evidence; Git activity alone never justifies it.\n\nRoot plan excerpt:\n${planExcerpt}${formatRepositoryContext(context)}`,
   };
 }
 
